@@ -16,8 +16,11 @@ public:
 	explicit DuckSyncStorageManager(ClientContext &context);
 	~DuckSyncStorageManager();
 
-	// Setup storage by attaching DuckLake
+	// Setup storage by attaching DuckLake (full setup)
 	void SetupStorage(const std::string &pg_connection_string, const std::string &data_path);
+
+	// Use an existing DuckLake catalog (simpler init)
+	void UseExistingCatalog(const std::string &catalog_name);
 
 	// Get the DuckLake catalog name (for use in queries)
 	const std::string &GetDuckLakeName() const {
@@ -46,6 +49,7 @@ private:
 	std::string ducklake_name_; // Name of the attached DuckLake catalog
 
 	Connection GetConnection();
+	void InstallRequiredExtensions();
 	void AttachDuckLake();
 };
 

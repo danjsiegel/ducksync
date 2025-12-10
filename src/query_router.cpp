@@ -41,20 +41,20 @@ unique_ptr<TableRef> QueryRouter::ReplacementScan(ClientContext &context, Replac
 
 	std::string table_name = input.table_name;
 
-	// Layer 1: Check if this table name matches a registered cache
+	// Check if this table name matches a registered cache
 	CacheDefinition cache;
 	if (!FindCache(context, table_name, cache)) {
 		// Not a DuckSync cache - pass through to DuckDB
 		return nullptr;
 	}
 
-	// Layer 2: Check TTL and auto-refresh if expired
+	// Check TTL and auto-refresh if expired
 	if (!IsCacheValid(context, cache)) {
 		// Cache expired or never refreshed - trigger synchronous refresh
 		AutoRefreshCache(context, cache);
 	}
 
-	// Layer 3: Return reference to DuckLake cached table
+	// Return reference to DuckLake cached table
 	return GetCacheTableRef(context, cache);
 }
 
@@ -169,13 +169,14 @@ unique_ptr<TableRef> QueryRouter::GetCacheTableRef(ClientContext &context, const
 unique_ptr<TableRef> QueryRouter::HandlePassthrough(ClientContext &context, const std::string &table_name,
                                                     const SourceDefinition &source) {
 	// For passthrough, create a snowflake_query call
-	// This creates: SELECT * FROM snowflake_query('{secret_name}', 'SELECT * FROM {table_name}')
+	// Signature: snowflake_query(query_string, secret_name)
+	// This creates: SELECT * FROM snowflake_query('SELECT * FROM {table_name}', '{secret_name}')
 
 	auto table_function = make_uniq<TableFunctionRef>();
 
 	vector<unique_ptr<ParsedExpression>> args;
-	args.push_back(make_uniq<ConstantExpression>(Value(source.secret_name)));
 	args.push_back(make_uniq<ConstantExpression>(Value("SELECT * FROM " + table_name)));
+	args.push_back(make_uniq<ConstantExpression>(Value(source.secret_name)));
 
 	table_function->function = make_uniq<FunctionExpression>("snowflake_query", std::move(args));
 

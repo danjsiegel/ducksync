@@ -20,6 +20,8 @@
 #include <openssl/opensslv.h>
 
 #include <sstream>
+#include <algorithm>
+#include <cctype>
 
 namespace duckdb {
 
@@ -81,6 +83,59 @@ static void DuckSyncSetupStorageFunction(ClientContext &context, TableFunctionIn
 }
 
 //===--------------------------------------------------------------------===//
+// ducksync_init(catalog_name)
+// - Use an existing DuckLake catalog for DuckSync storage
+//===--------------------------------------------------------------------===//
+struct InitBindData : public TableFunctionData {
+	std::string catalog_name;
+	bool done = false;
+};
+
+static unique_ptr<FunctionData> DuckSyncInitBind(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<InitBindData>();
+
+	if (input.inputs.empty()) {
+		throw InvalidInputException("ducksync_init requires 1 argument: catalog_name (your existing DuckLake catalog)");
+	}
+
+	result->catalog_name = input.inputs[0].GetValue<string>();
+
+	names.emplace_back("status");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	return std::move(result);
+}
+
+static void DuckSyncInitFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<InitBindData>();
+
+	if (bind_data.done) {
+		output.SetCardinality(0);
+		return;
+	}
+
+	// Use existing DuckLake catalog
+	auto &state = GetDuckSyncState(context);
+	if (!state.storage_manager) {
+		state.storage_manager = make_uniq<DuckSyncStorageManager>(context);
+	}
+	state.storage_manager->UseExistingCatalog(bind_data.catalog_name);
+
+	// Initialize metadata manager (creates ducksync schema and tables)
+	if (!state.metadata_manager) {
+		state.metadata_manager = make_uniq<DuckSyncMetadataManager>(context);
+	}
+	state.metadata_manager->Initialize(bind_data.catalog_name);
+
+	state.initialized = true;
+	bind_data.done = true;
+
+	output.SetCardinality(1);
+	output.SetValue(0, 0, Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'"));
+}
+
+//===--------------------------------------------------------------------===//
 // ducksync_add_source(source_name, driver_type, secret_name, passthrough_enabled)
 //===--------------------------------------------------------------------===//
 struct AddSourceBindData : public TableFunctionData {
@@ -133,7 +188,7 @@ static void DuckSyncAddSourceFunction(ClientContext &context, TableFunctionInput
 
 	auto &state = GetDuckSyncState(context);
 	if (!state.metadata_manager) {
-		throw InvalidInputException("DuckSync not initialized. Call ducksync_setup_storage first.");
+		throw InvalidInputException("DuckSync not initialized. Call ducksync_init or ducksync_setup_storage first.");
 	}
 
 	SourceDefinition source;
@@ -206,7 +261,7 @@ static void DuckSyncCreateCacheFunction(ClientContext &context, TableFunctionInp
 
 	auto &state = GetDuckSyncState(context);
 	if (!state.metadata_manager) {
-		throw InvalidInputException("DuckSync not initialized. Call ducksync_setup_storage first.");
+		throw InvalidInputException("DuckSync not initialized. Call ducksync_init or ducksync_setup_storage first.");
 	}
 
 	// Verify source exists
@@ -313,10 +368,149 @@ static void DuckSyncRefreshFunction(ClientContext &context, TableFunctionInput &
 }
 
 //===--------------------------------------------------------------------===//
+// ducksync_passthrough_query(sql, source_name)
+// - Run a query, trying DuckLake first, falling back to Snowflake
+//===--------------------------------------------------------------------===//
+struct PassthroughBindData : public TableFunctionData {
+	std::string sql_query;
+	std::string source_name;
+};
+
+static unique_ptr<FunctionData> DuckSyncPassthroughBind(ClientContext &context, TableFunctionBindInput &input,
+                                                        vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<PassthroughBindData>();
+
+	if (input.inputs.size() < 2) {
+		throw InvalidInputException("ducksync_passthrough_query requires 2 arguments: sql_query, source_name");
+	}
+
+	result->sql_query = input.inputs[0].GetValue<string>();
+	result->source_name = input.inputs[1].GetValue<string>();
+
+	// We'll determine schema dynamically at execution time
+	// For now, return a single VARCHAR column as placeholder
+	names.emplace_back("result");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	return std::move(result);
+}
+
+// Helper: Extract table name from simple SELECT query (single table, no JOINs)
+// Returns empty string if query is too complex
+static std::string ExtractSimpleTableName(const std::string &sql) {
+	// Convert to uppercase for pattern matching
+	std::string upper_sql = sql;
+	std::transform(upper_sql.begin(), upper_sql.end(), upper_sql.begin(), ::toupper);
+
+	// Check for complexity indicators - if found, return empty (too complex)
+	if (upper_sql.find(" JOIN ") != std::string::npos ||
+	    upper_sql.find(" UNION ") != std::string::npos ||
+	    upper_sql.find(" INTERSECT ") != std::string::npos ||
+	    upper_sql.find(" EXCEPT ") != std::string::npos) {
+		return "";
+	}
+
+	// Find FROM clause
+	size_t from_pos = upper_sql.find(" FROM ");
+	if (from_pos == std::string::npos) {
+		return "";
+	}
+
+	// Extract what comes after FROM
+	size_t table_start = from_pos + 6; // " FROM " is 6 chars
+	while (table_start < sql.size() && std::isspace(sql[table_start])) {
+		table_start++;
+	}
+
+	// Find end of table name (space, WHERE, GROUP, ORDER, LIMIT, ;, or end)
+	size_t table_end = table_start;
+	while (table_end < sql.size()) {
+		char c = sql[table_end];
+		if (std::isspace(c) || c == ';') {
+			break;
+		}
+		// Check for keywords that end table name
+		std::string remaining = upper_sql.substr(table_end);
+		if (remaining.find("WHERE") == 0 || remaining.find("GROUP") == 0 ||
+		    remaining.find("ORDER") == 0 || remaining.find("LIMIT") == 0 ||
+		    remaining.find("HAVING") == 0) {
+			break;
+		}
+		table_end++;
+	}
+
+	if (table_end <= table_start) {
+		return "";
+	}
+
+	return sql.substr(table_start, table_end - table_start);
+}
+
+static void DuckSyncPassthroughFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->Cast<PassthroughBindData>();
+	auto &state = GetDuckSyncState(context);
+
+	if (!state.metadata_manager || !state.storage_manager) {
+		throw InvalidInputException("DuckSync not initialized. Call ducksync_init or ducksync_setup_storage first.");
+	}
+
+	// Get the source to find the secret
+	SourceDefinition source;
+	if (!state.metadata_manager->GetSource(bind_data.source_name, source)) {
+		throw InvalidInputException("Source '" + bind_data.source_name + "' not found");
+	}
+
+	auto conn = Connection(*context.db);
+
+	// Simple check: Is this a single-table query?
+	std::string table_name = ExtractSimpleTableName(bind_data.sql_query);
+
+	if (!table_name.empty()) {
+		// Check if this table is a cached table
+		CacheDefinition cache;
+		if (state.metadata_manager->GetCache(table_name, cache)) {
+			// Found in cache! Rewrite query to use DuckLake table
+			std::string ducklake_table = state.storage_manager->GetDuckLakeTableName(cache.cache_name, cache.source_name);
+
+			// Replace table name in query with DuckLake table
+			std::string rewritten_sql = bind_data.sql_query;
+			size_t pos = rewritten_sql.find(table_name);
+			if (pos != std::string::npos) {
+				rewritten_sql.replace(pos, table_name.length(), ducklake_table);
+			}
+
+			auto cache_result = conn.Query(rewritten_sql);
+			if (!cache_result->HasError()) {
+				output.SetCardinality(1);
+				output.SetValue(0, 0, Value("Cache hit: " + std::to_string(cache_result->RowCount()) + " rows from " + ducklake_table));
+				return;
+			}
+			// Cache query failed, fall through to Snowflake
+		}
+	}
+
+	// Complex query OR table not in cache - pass through to Snowflake
+	std::ostringstream sf_query;
+	sf_query << "SELECT * FROM snowflake_query('" << bind_data.sql_query << "', '" << source.secret_name << "');";
+
+	auto sf_result = conn.Query(sf_query.str());
+	if (sf_result->HasError()) {
+		throw IOException("Passthrough query failed: " + sf_result->GetError());
+	}
+
+	output.SetCardinality(1);
+	output.SetValue(0, 0, Value("Passthrough: " + std::to_string(sf_result->RowCount()) + " rows from Snowflake"));
+}
+
+//===--------------------------------------------------------------------===//
 // Extension Load - Using ExtensionLoader API
 //===--------------------------------------------------------------------===//
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register ducksync_setup_storage
+	// Register ducksync_init (use existing DuckLake catalog)
+	TableFunction init_func("ducksync_init", {LogicalType::VARCHAR}, DuckSyncInitFunction, DuckSyncInitBind);
+	loader.RegisterFunction(init_func);
+
+	// Register ducksync_setup_storage (full setup - attaches DuckLake)
 	TableFunction setup_storage_func("ducksync_setup_storage", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                 DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
 	loader.RegisterFunction(setup_storage_func);
@@ -340,6 +534,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                           DuckSyncRefreshBind);
 	refresh_func.named_parameters["force"] = LogicalType::BOOLEAN;
 	loader.RegisterFunction(refresh_func);
+
+	// Register ducksync_passthrough_query
+	TableFunction passthrough_func("ducksync_passthrough_query", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                               DuckSyncPassthroughFunction, DuckSyncPassthroughBind);
+	loader.RegisterFunction(passthrough_func);
 
 	// Register replacement_scan hook for transparent routing
 	auto &db = loader.GetDatabaseInstance();

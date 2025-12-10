@@ -157,11 +157,14 @@ RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
 	tables_in << ")";
 
 	// Query Snowflake information_schema via snowflake_query
+	// Signature: snowflake_query(query_string, secret_name)
+	std::ostringstream sf_query;
+	sf_query << "SELECT table_catalog || ''.'' || table_schema || ''.'' || table_name as full_name, "
+	         << "last_altered FROM information_schema.tables "
+	         << "WHERE table_name IN " << tables_in.str();
+
 	std::ostringstream query;
-	query << "SELECT * FROM snowflake_query('" << secret_name << "', '"
-	      << "SELECT table_catalog || ''.'' || table_schema || ''.'' || table_name as full_name, "
-	      << "last_altered FROM information_schema.tables "
-	      << "WHERE table_name IN " << tables_in.str() << "');";
+	query << "SELECT * FROM snowflake_query('" << sf_query.str() << "', '" << secret_name << "');";
 
 	auto result = conn.Query(query.str());
 	if (result->HasError()) {
@@ -212,8 +215,9 @@ int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const 
 	auto conn = MakeConnection(context_);
 
 	// Execute query via Snowflake extension
+	// Signature: snowflake_query(query_string, secret_name)
 	std::ostringstream query;
-	query << "SELECT * FROM snowflake_query('" << source.secret_name << "', '" << cache.source_query << "');";
+	query << "SELECT * FROM snowflake_query('" << cache.source_query << "', '" << source.secret_name << "');";
 
 	auto result = conn.Query(query.str());
 	if (result->HasError()) {
@@ -239,9 +243,10 @@ int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const 
 	}
 
 	// Create table from query
+	// Signature: snowflake_query(query_string, secret_name)
 	std::ostringstream create_table;
 	create_table << "CREATE OR REPLACE TABLE " << table_name << " AS "
-	             << "SELECT * FROM snowflake_query('" << source.secret_name << "', '" << cache.source_query << "');";
+	             << "SELECT * FROM snowflake_query('" << cache.source_query << "', '" << source.secret_name << "');";
 
 	auto create_result = conn.Query(create_table.str());
 	if (create_result->HasError()) {

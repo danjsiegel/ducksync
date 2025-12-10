@@ -25,23 +25,68 @@ void DuckSyncStorageManager::SetupStorage(const std::string &pg_connection_strin
 	AttachDuckLake();
 }
 
+void DuckSyncStorageManager::UseExistingCatalog(const std::string &catalog_name) {
+	if (ducklake_attached_) {
+		return;
+	}
+
+	// Install required extensions (DuckLake + Snowflake)
+	InstallRequiredExtensions();
+
+	auto conn = GetConnection();
+
+	// Verify the catalog exists by querying information_schema
+	std::ostringstream check_sql;
+	check_sql << "SELECT COUNT(*) FROM information_schema.schemata WHERE catalog_name = '" << catalog_name << "';";
+
+	auto result = conn.Query(check_sql.str());
+	if (result->HasError()) {
+		throw IOException("Failed to verify catalog '" + catalog_name + "': " + result->GetError());
+	}
+
+	if (result->RowCount() == 0 || result->GetValue(0, 0).GetValue<int64_t>() == 0) {
+		throw IOException("Catalog '" + catalog_name + "' not found. Make sure DuckLake is attached first.");
+	}
+
+	ducklake_name_ = catalog_name;
+	ducklake_attached_ = true;
+}
+
+void DuckSyncStorageManager::InstallRequiredExtensions() {
+	auto conn = GetConnection();
+
+	// Install and load Snowflake extension
+	auto sf_install = conn.Query("INSTALL snowflake FROM community;");
+	if (sf_install->HasError()) {
+		throw IOException("Failed to install Snowflake extension: " + sf_install->GetError());
+	}
+
+	auto sf_load = conn.Query("LOAD snowflake;");
+	if (sf_load->HasError()) {
+		throw IOException("Failed to load Snowflake extension: " + sf_load->GetError());
+	}
+
+	// Install and load DuckLake extension
+	auto dl_install = conn.Query("INSTALL ducklake;");
+	if (dl_install->HasError()) {
+		throw IOException("Failed to install DuckLake extension: " + dl_install->GetError());
+	}
+
+	auto dl_load = conn.Query("LOAD ducklake;");
+	if (dl_load->HasError()) {
+		throw IOException("Failed to load DuckLake extension: " + dl_load->GetError());
+	}
+}
+
 void DuckSyncStorageManager::AttachDuckLake() {
 	if (ducklake_attached_) {
 		return;
 	}
 
+	// Install required extensions (DuckLake + Snowflake)
+	InstallRequiredExtensions();
+
 	auto conn = GetConnection();
-
-	// Install and load DuckLake extension (it handles PostgreSQL internally)
-	auto install_result = conn.Query("INSTALL ducklake;");
-	if (install_result->HasError()) {
-		throw IOException("Failed to install DuckLake: " + install_result->GetError());
-	}
-
-	auto load_result = conn.Query("LOAD ducklake;");
-	if (load_result->HasError()) {
-		throw IOException("Failed to load DuckLake: " + load_result->GetError());
-	}
 
 	// Attach DuckLake with PostgreSQL catalog and data path
 	// Syntax: ATTACH 'ducklake:postgres:connection_string' AS name (DATA_PATH 'path');

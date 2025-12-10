@@ -14,9 +14,14 @@ SELECT 1;
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
 ----
-4
+6
 
 # Test function signatures exist
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_init';
+----
+1
+
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_setup_storage';
 ----
@@ -37,7 +42,17 @@ SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_refresh'
 ----
 1
 
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_passthrough_query';
+----
+1
+
 # Test error handling - wrong number of arguments
+statement error
+SELECT * FROM ducksync_init();
+----
+No function matches
+
 statement error
 SELECT * FROM ducksync_setup_storage();
 ----
@@ -72,4 +87,20 @@ statement error
 SELECT * FROM ducksync_refresh();
 ----
 No function matches
+
+statement error
+SELECT * FROM ducksync_passthrough_query();
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_passthrough_query('only_one');
+----
+No function matches
+
+# Test passthrough requires initialization
+statement error
+SELECT * FROM ducksync_passthrough_query('SELECT * FROM test', 'my_source');
+----
+DuckSync not initialized
 
