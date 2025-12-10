@@ -403,10 +403,8 @@ static std::string ExtractSimpleTableName(const std::string &sql) {
 	std::transform(upper_sql.begin(), upper_sql.end(), upper_sql.begin(), ::toupper);
 
 	// Check for complexity indicators - if found, return empty (too complex)
-	if (upper_sql.find(" JOIN ") != std::string::npos ||
-	    upper_sql.find(" UNION ") != std::string::npos ||
-	    upper_sql.find(" INTERSECT ") != std::string::npos ||
-	    upper_sql.find(" EXCEPT ") != std::string::npos) {
+	if (upper_sql.find(" JOIN ") != std::string::npos || upper_sql.find(" UNION ") != std::string::npos ||
+	    upper_sql.find(" INTERSECT ") != std::string::npos || upper_sql.find(" EXCEPT ") != std::string::npos) {
 		return "";
 	}
 
@@ -431,9 +429,8 @@ static std::string ExtractSimpleTableName(const std::string &sql) {
 		}
 		// Check for keywords that end table name
 		std::string remaining = upper_sql.substr(table_end);
-		if (remaining.find("WHERE") == 0 || remaining.find("GROUP") == 0 ||
-		    remaining.find("ORDER") == 0 || remaining.find("LIMIT") == 0 ||
-		    remaining.find("HAVING") == 0) {
+		if (remaining.find("WHERE") == 0 || remaining.find("GROUP") == 0 || remaining.find("ORDER") == 0 ||
+		    remaining.find("LIMIT") == 0 || remaining.find("HAVING") == 0) {
 			break;
 		}
 		table_end++;
@@ -470,7 +467,8 @@ static void DuckSyncPassthroughFunction(ClientContext &context, TableFunctionInp
 		CacheDefinition cache;
 		if (state.metadata_manager->GetCache(table_name, cache)) {
 			// Found in cache! Rewrite query to use DuckLake table
-			std::string ducklake_table = state.storage_manager->GetDuckLakeTableName(cache.cache_name, cache.source_name);
+			std::string ducklake_table =
+			    state.storage_manager->GetDuckLakeTableName(cache.cache_name, cache.source_name);
 
 			// Replace table name in query with DuckLake table
 			std::string rewritten_sql = bind_data.sql_query;
@@ -482,7 +480,9 @@ static void DuckSyncPassthroughFunction(ClientContext &context, TableFunctionInp
 			auto cache_result = conn.Query(rewritten_sql);
 			if (!cache_result->HasError()) {
 				output.SetCardinality(1);
-				output.SetValue(0, 0, Value("Cache hit: " + std::to_string(cache_result->RowCount()) + " rows from " + ducklake_table));
+				output.SetValue(
+				    0, 0,
+				    Value("Cache hit: " + std::to_string(cache_result->RowCount()) + " rows from " + ducklake_table));
 				return;
 			}
 			// Cache query failed, fall through to Snowflake
