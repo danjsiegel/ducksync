@@ -1,0 +1,11 @@
+repos:
+  - repo: local
+    hooks:
+      - id: format-check
+        name: DuckDB Format Check
+        entry: bash -c 'make format-check'
+        language: system
+        types: [text]
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
