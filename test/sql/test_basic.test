@@ -1,6 +1,6 @@
 # name: test/sql/test_basic.test
 # description: Basic unit tests for DuckSync extension
-# group: [ducksync]
+# group: [sql]
 
 # These tests don't require external services (PostgreSQL/Snowflake)
 
