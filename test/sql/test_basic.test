@@ -1,0 +1,75 @@
+# name: test/sql/test_basic.test
+# description: Basic unit tests for DuckSync extension
+# group: [ducksync]
+
+# These tests don't require external services (PostgreSQL/Snowflake)
+
+require ducksync
+
+# Test extension loads
+statement ok
+SELECT 1;
+
+# Test functions are registered
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
+----
+4
+
+# Test function signatures exist
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_setup_storage';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_add_source';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_create_cache';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_refresh';
+----
+1
+
+# Test error handling - wrong number of arguments
+statement error
+SELECT * FROM ducksync_setup_storage();
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_setup_storage('only_one');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_add_source();
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_add_source('only_one');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_create_cache();
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_create_cache('one', 'two');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_refresh();
+----
+No function matches
+

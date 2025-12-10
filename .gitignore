@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+cmake-build-*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts  
+duckdb_unittest_tempdir/
+*.db
+*.wal
+
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+
+# Docker volumes
+postgres_data/
+minio_data/
