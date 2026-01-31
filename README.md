@@ -152,36 +152,69 @@ Refresh a cache with smart check logic.
 
 **Examples:**
 ```sql
--- Table IS cached → executes locally (fast, no Snowflake calls)
+-- Cache hit via monitored table name → executes locally
 SELECT * FROM ducksync_query(
     'SELECT * FROM PROD.PUBLIC.CUSTOMERS WHERE region = ''US''',
     'prod'
 );
--- Returns actual data from local cache
+
+-- Cache hit via named query (use cache_name directly)
+-- Useful for complex queries cached under a friendly name
+SELECT * FROM ducksync_query(
+    'SELECT * FROM customers_cache LIMIT 10',
+    'prod'
+);
 
 -- Table NOT cached → passthrough to Snowflake
 SELECT * FROM ducksync_query(
     'SELECT * FROM PROD.PUBLIC.RAW_ORDERS LIMIT 100',
     'prod'
 );
--- Returns actual data from Snowflake
 
 -- JOIN with mixed tables (1 cached, 1 not) → passthrough to Snowflake
 SELECT * FROM ducksync_query(
     'SELECT c.*, o.total FROM CUSTOMERS c JOIN ORDERS o ON c.id = o.customer_id',
     'prod'
 );
--- Entire query executes on Snowflake
 
 -- Complex aggregation from cache
 SELECT * FROM ducksync_query(
     'SELECT region, COUNT(*) as cnt FROM PROD.PUBLIC.CUSTOMERS GROUP BY region',
     'prod'
 );
--- Aggregation runs locally on cached data
 ```
 
+**Named Queries:** You can query by cache name directly (e.g., `customers_cache`) instead of the Snowflake table name. This is useful for caching complex joins or aggregations under a friendly name that doesn't exist as a table in Snowflake.
+
 **Best Practice:** Create caches with `monitor_tables` matching your Snowflake table names for automatic routing.
+
+### Direct DuckLake Access
+
+Cached data is stored in standard DuckLake tables. Query them directly with normal DuckDB SQL:
+
+```sql
+-- Create and refresh a cache
+SELECT * FROM ducksync_create_cache('customers', 'prod', 'SELECT * FROM CUSTOMERS', ['CUSTOMERS'], 3600);
+SELECT * FROM ducksync_refresh('customers');
+
+-- Query the DuckLake table directly (standard DuckDB - no magic)
+SELECT * FROM ducksync.prod.customers;
+SELECT * FROM ducksync.prod.customers WHERE region = 'US';
+
+-- Join with local tables
+SELECT c.*, l.segment 
+FROM ducksync.prod.customers c 
+JOIN local_segments l ON c.id = l.customer_id;
+```
+
+**Path format:** `{catalog}.{source_name}.{cache_name}` (e.g., `ducksync.prod.customers`)
+
+**When to use each approach:**
+
+| Method | Use When |
+|--------|----------|
+| `ducksync_query()` | Smart routing with TTL checks and auto-refresh |
+| Direct DuckLake | Fast queries, no TTL checks, joining with local data |
 
 ## Smart Refresh Logic
 
@@ -204,12 +237,12 @@ This approach means:
 ┌─────────────────────────────────────────────────────────────┐
 │                     DuckSync Extension                       │
 ├─────────────────────────────────────────────────────────────┤
-│  QueryRouter         MetadataManager      StorageManager     │
-│  (replacement_scan)  (DuckLake tables)    (DuckLake)         │
+│  ducksync_query()    MetadataManager      StorageManager     │
+│  (smart routing)     (DuckLake tables)    (DuckLake)         │
 │         │                  │                   │             │
 │         ▼                  ▼                   ▼             │
 │  ┌──────────┐       ┌───────────┐       ┌───────────┐       │
-│  │ Cache    │       │ ducksync. │       │ DuckLake  │       │
+│  │ TTL +    │       │ ducksync. │       │ DuckLake  │       │
 │  │ Routing  │◄─────►│ sources   │       │ Parquet   │       │
 │  └──────────┘       │ caches    │       │ Files     │       │
 │         │           │ state     │       └───────────┘       │
@@ -218,7 +251,7 @@ This approach means:
 │         │          PostgreSQL Catalog ─────────┘             │
 │  ┌──────▼───────────────────────────────────────┐           │
 │  │            RefreshOrchestrator               │           │
-│  │  • TTL check                                 │           │
+│  │  • TTL check + auto-refresh                  │           │
 │  │  • Source metadata query (snowflake_query)   │           │
 │  │  • State hash comparison                     │           │
 │  │  • Query execution & storage                 │           │

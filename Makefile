@@ -12,6 +12,7 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 test: release test-docker-up
 	@chmod +x $(PROJ_DIR)test/run_tests.sh
 	@$(PROJ_DIR)test/run_tests.sh
+	@$(MAKE) clean-test-data
 
 integration-test: test
 

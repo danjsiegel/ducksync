@@ -382,34 +382,6 @@ static void DuckSyncRefreshFunction(ClientContext &context, TableFunctionInput &
 }
 
 //===--------------------------------------------------------------------===//
-// ducksync_passthrough_query(sql, source_name)
-// - Run a query, trying DuckLake first, falling back to Snowflake
-//===--------------------------------------------------------------------===//
-struct PassthroughBindData : public TableFunctionData {
-	std::string sql_query;
-	std::string source_name;
-};
-
-static unique_ptr<FunctionData> DuckSyncPassthroughBind(ClientContext &context, TableFunctionBindInput &input,
-                                                        vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<PassthroughBindData>();
-
-	if (input.inputs.size() < 2) {
-		throw InvalidInputException("ducksync_passthrough_query requires 2 arguments: sql_query, source_name");
-	}
-
-	result->sql_query = input.inputs[0].GetValue<string>();
-	result->source_name = input.inputs[1].GetValue<string>();
-
-	// We'll determine schema dynamically at execution time
-	// For now, return a single VARCHAR column as placeholder
-	names.emplace_back("result");
-	return_types.emplace_back(LogicalType::VARCHAR);
-
-	return std::move(result);
-}
-
-//===--------------------------------------------------------------------===//
 // Table Extraction using DuckDB Parser
 //===--------------------------------------------------------------------===//
 
@@ -525,26 +497,62 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 	// Extract table references using DuckDB parser
 	auto tables = ExtractTableReferences(result->sql_query);
 
-	// Check cache coverage
+	// Check cache coverage and TTL validity
 	std::vector<std::pair<std::string, std::string>> rewrites; // original_table -> ducklake_table
+	std::vector<CacheDefinition> caches_to_refresh;            // caches with expired TTL
 	bool all_cached = !tables.empty();
 
 	for (auto &table : tables) {
 		CacheDefinition cache;
+		bool found = false;
+
 		// First check if it's a cache name directly
 		if (state.metadata_manager->GetCache(table, cache)) {
-			std::string ducklake_table =
-			    state.storage_manager->GetDuckLakeTableName(cache.cache_name, cache.source_name);
-			rewrites.push_back({table, ducklake_table});
+			found = true;
 		}
 		// Then check if it's a monitored table
 		else if (state.metadata_manager->GetCacheByMonitorTable(table, cache)) {
+			found = true;
+		}
+
+		if (found) {
+			// Check TTL - if expired, mark for refresh
+			CacheState cache_state;
+			bool needs_refresh = false;
+
+			if (!state.metadata_manager->GetState(cache.cache_name, cache_state)) {
+				// Never refreshed
+				needs_refresh = true;
+			} else if (cache.has_ttl && cache_state.HasExpiresAt()) {
+				// Check if TTL expired
+				auto conn = Connection(*context.db);
+				std::ostringstream sql;
+				sql << "SELECT CASE WHEN TIMESTAMP '" << cache_state.expires_at
+				    << "' < CURRENT_TIMESTAMP THEN TRUE ELSE FALSE END;";
+				auto ttl_result = conn.Query(sql.str());
+				if (!ttl_result->HasError() && ttl_result->RowCount() > 0) {
+					needs_refresh = ttl_result->GetValue(0, 0).GetValue<bool>();
+				}
+			}
+
+			if (needs_refresh) {
+				caches_to_refresh.push_back(cache);
+			}
+
 			std::string ducklake_table =
 			    state.storage_manager->GetDuckLakeTableName(cache.cache_name, cache.source_name);
 			rewrites.push_back({table, ducklake_table});
 		} else {
 			all_cached = false;
 			break;
+		}
+	}
+
+	// Refresh any expired caches before executing query
+	if (!caches_to_refresh.empty()) {
+		RefreshOrchestrator orchestrator(context, *state.metadata_manager, *state.storage_manager);
+		for (auto &cache : caches_to_refresh) {
+			orchestrator.Refresh(cache.cache_name, false); // smart refresh (checks if actually changed)
 		}
 	}
 
@@ -653,36 +661,6 @@ static void DuckSyncQueryFunction(ClientContext &context, TableFunctionInput &da
 	}
 }
 
-// Keep the old passthrough function for backwards compatibility (deprecated)
-static void DuckSyncPassthroughFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->Cast<PassthroughBindData>();
-	auto &state = GetDuckSyncState(context);
-
-	if (!state.metadata_manager || !state.storage_manager) {
-		throw InvalidInputException("DuckSync not initialized. Call ducksync_init or ducksync_setup_storage first.");
-	}
-
-	// Get the source to find the secret
-	SourceDefinition source;
-	if (!state.metadata_manager->GetSource(bind_data.source_name, source)) {
-		throw InvalidInputException("Source '" + bind_data.source_name + "' not found");
-	}
-
-	auto conn = Connection(*context.db);
-
-	// Pass through to Snowflake
-	std::ostringstream sf_query;
-	sf_query << "SELECT * FROM snowflake_query('" << bind_data.sql_query << "', '" << source.secret_name << "');";
-
-	auto sf_result = conn.Query(sf_query.str());
-	if (sf_result->HasError()) {
-		throw IOException("Passthrough query failed: " + sf_result->GetError());
-	}
-
-	output.SetCardinality(1);
-	output.SetValue(0, 0, Value("Passthrough: " + std::to_string(sf_result->RowCount()) + " rows from Snowflake"));
-}
-
 //===--------------------------------------------------------------------===//
 // Extension Load - Using ExtensionLoader API
 //===--------------------------------------------------------------------===//
@@ -721,12 +699,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                         DuckSyncQueryBind, DuckSyncQueryInitGlobal);
 	loader.RegisterFunction(query_func);
 
-	// Register ducksync_passthrough_query (deprecated, kept for backwards compatibility)
-	TableFunction passthrough_func("ducksync_passthrough_query", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                               DuckSyncPassthroughFunction, DuckSyncPassthroughBind);
-	loader.RegisterFunction(passthrough_func);
-
-	// Register replacement_scan hook for transparent routing
+	// Register replacement_scan hook
 	auto &db = loader.GetDatabaseInstance();
 	QueryRouter::Register(db);
 }

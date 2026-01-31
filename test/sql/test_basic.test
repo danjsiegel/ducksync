@@ -14,7 +14,7 @@ SELECT 1;
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
 ----
-7
+6
 
 # Test function signatures exist
 query I
@@ -39,11 +39,6 @@ SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_create_c
 
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_refresh';
-----
-1
-
-query I
-SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_passthrough_query';
 ----
 1
 
@@ -94,16 +89,6 @@ SELECT * FROM ducksync_refresh();
 No function matches
 
 statement error
-SELECT * FROM ducksync_passthrough_query();
-----
-No function matches
-
-statement error
-SELECT * FROM ducksync_passthrough_query('only_one');
-----
-No function matches
-
-statement error
 SELECT * FROM ducksync_query();
 ----
 No function matches
@@ -114,11 +99,6 @@ SELECT * FROM ducksync_query('only_one');
 No function matches
 
 # Test functions require initialization
-statement error
-SELECT * FROM ducksync_passthrough_query('SELECT * FROM test', 'my_source');
-----
-DuckSync not initialized
-
 statement error
 SELECT * FROM ducksync_query('SELECT * FROM test', 'my_source');
 ----

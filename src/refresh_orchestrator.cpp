@@ -145,8 +145,9 @@ RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
 	std::ostringstream tables_in;
 	tables_in << "(";
 	for (size_t i = 0; i < monitor_tables.size(); i++) {
-		if (i > 0)
+		if (i > 0) {
 			tables_in << ", ";
+		}
 		// Extract just the table name (last part after dots)
 		std::string table_name = monitor_tables[i];
 		size_t last_dot = table_name.rfind('.');
@@ -202,8 +203,9 @@ std::string RefreshOrchestrator::GenerateStateHash(const std::unordered_map<std:
 	std::ostringstream json;
 	json << "{";
 	for (size_t i = 0; i < sorted_metadata.size(); i++) {
-		if (i > 0)
+		if (i > 0) {
 			json << ",";
+		}
 		json << "\"" << sorted_metadata[i].first << "\":\"" << sorted_metadata[i].second << "\"";
 	}
 	json << "}";
