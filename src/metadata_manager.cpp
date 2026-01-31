@@ -165,6 +165,19 @@ void DuckSyncMetadataManager::DeleteSource(const std::string &source_name) {
 // Cache Operations
 //===--------------------------------------------------------------------===//
 
+// Helper to escape single quotes in SQL strings
+static std::string EscapeSQLString(const std::string &str) {
+	std::ostringstream escaped;
+	for (char c : str) {
+		if (c == '\'') {
+			escaped << "''";
+		} else {
+			escaped << c;
+		}
+	}
+	return escaped.str();
+}
+
 void DuckSyncMetadataManager::CreateCache(const CacheDefinition &cache) {
 	if (!initialized_) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
@@ -172,7 +185,8 @@ void DuckSyncMetadataManager::CreateCache(const CacheDefinition &cache) {
 
 	// DuckLake doesn't support ON CONFLICT, so delete then insert
 	std::ostringstream delete_sql;
-	delete_sql << "DELETE FROM " << TableName("caches") << " WHERE cache_name = '" << cache.cache_name << "';";
+	delete_sql << "DELETE FROM " << TableName("caches") << " WHERE cache_name = '" << EscapeSQLString(cache.cache_name)
+	           << "';";
 	ExecuteSQL(delete_sql.str());
 
 	// Build monitor_tables array
@@ -181,16 +195,16 @@ void DuckSyncMetadataManager::CreateCache(const CacheDefinition &cache) {
 	for (size_t i = 0; i < cache.monitor_tables.size(); i++) {
 		if (i > 0)
 			tables_array << ", ";
-		tables_array << "'" << cache.monitor_tables[i] << "'";
+		tables_array << "'" << EscapeSQLString(cache.monitor_tables[i]) << "'";
 	}
 	tables_array << "]";
 
 	std::ostringstream sql;
 	sql << "INSERT INTO " << TableName("caches")
 	    << " (cache_name, source_name, source_query, monitor_tables, ttl_seconds, created_at) VALUES ("
-	    << "'" << cache.cache_name << "', "
-	    << "'" << cache.source_name << "', "
-	    << "'" << cache.source_query << "', " << tables_array.str() << ", ";
+	    << "'" << EscapeSQLString(cache.cache_name) << "', "
+	    << "'" << EscapeSQLString(cache.source_name) << "', "
+	    << "'" << EscapeSQLString(cache.source_query) << "', " << tables_array.str() << ", ";
 
 	if (cache.has_ttl) {
 		sql << cache.ttl_seconds;
@@ -244,6 +258,31 @@ bool DuckSyncMetadataManager::GetCache(const std::string &cache_name, CacheDefin
 	out.created_at = result->GetValue(5, 0).ToString();
 
 	return true;
+}
+
+bool DuckSyncMetadataManager::GetCacheByMonitorTable(const std::string &table_name, CacheDefinition &out) {
+	if (!initialized_) {
+		throw InternalException("DuckSyncMetadataManager not initialized");
+	}
+
+	// Normalize table name for comparison (uppercase)
+	std::string upper_table = table_name;
+	std::transform(upper_table.begin(), upper_table.end(), upper_table.begin(), ::toupper);
+
+	// Search all caches for one that monitors this table
+	auto caches = ListCaches();
+	for (auto &cache : caches) {
+		for (auto &monitor_table : cache.monitor_tables) {
+			std::string upper_monitor = monitor_table;
+			std::transform(upper_monitor.begin(), upper_monitor.end(), upper_monitor.begin(), ::toupper);
+			if (upper_monitor == upper_table) {
+				out = cache;
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 std::vector<CacheDefinition> DuckSyncMetadataManager::ListCaches() {
