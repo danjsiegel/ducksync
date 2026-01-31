@@ -165,57 +165,35 @@ void DuckSyncMetadataManager::DeleteSource(const std::string &source_name) {
 // Cache Operations
 //===--------------------------------------------------------------------===//
 
-// Helper to escape single quotes in SQL strings
-static std::string EscapeSQLString(const std::string &str) {
-	std::ostringstream escaped;
-	for (char c : str) {
-		if (c == '\'') {
-			escaped << "''";
-		} else {
-			escaped << c;
-		}
-	}
-	return escaped.str();
-}
-
 void DuckSyncMetadataManager::CreateCache(const CacheDefinition &cache) {
 	if (!initialized_) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
+	Connection conn(*context_.db);
+
 	// DuckLake doesn't support ON CONFLICT, so delete then insert
-	std::ostringstream delete_sql;
-	delete_sql << "DELETE FROM " << TableName("caches") << " WHERE cache_name = '" << EscapeSQLString(cache.cache_name)
-	           << "';";
-	ExecuteSQL(delete_sql.str());
+	auto delete_stmt = conn.Prepare("DELETE FROM " + TableName("caches") + " WHERE cache_name = $1");
+	delete_stmt->Execute(cache.cache_name);
 
-	// Build monitor_tables array
-	std::ostringstream tables_array;
-	tables_array << "[";
-	for (size_t i = 0; i < cache.monitor_tables.size(); i++) {
-		if (i > 0) {
-			tables_array << ", ";
-		}
-		tables_array << "'" << EscapeSQLString(cache.monitor_tables[i]) << "'";
+	// Build monitor_tables as DuckDB LIST value
+	vector<Value> table_values;
+	for (const auto &table : cache.monitor_tables) {
+		table_values.push_back(Value(table));
 	}
-	tables_array << "]";
+	Value tables_list = Value::LIST(LogicalType::VARCHAR, table_values);
 
-	std::ostringstream sql;
-	sql << "INSERT INTO " << TableName("caches")
-	    << " (cache_name, source_name, source_query, monitor_tables, ttl_seconds, created_at) VALUES ("
-	    << "'" << EscapeSQLString(cache.cache_name) << "', "
-	    << "'" << EscapeSQLString(cache.source_name) << "', "
-	    << "'" << EscapeSQLString(cache.source_query) << "', " << tables_array.str() << ", ";
+	// Use prepared statement for safe parameter binding
+	auto insert_stmt = conn.Prepare("INSERT INTO " + TableName("caches") +
+	                                " (cache_name, source_name, source_query, monitor_tables, ttl_seconds, created_at) "
+	                                "VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)");
 
-	if (cache.has_ttl) {
-		sql << cache.ttl_seconds;
-	} else {
-		sql << "NULL";
+	Value ttl_value = cache.has_ttl ? Value::INTEGER(cache.ttl_seconds) : Value(LogicalType::INTEGER);
+
+	auto result = insert_stmt->Execute(cache.cache_name, cache.source_name, cache.source_query, tables_list, ttl_value);
+	if (result->HasError()) {
+		throw InternalException("Failed to create cache: %s", result->GetError().c_str());
 	}
-
-	sql << ", CURRENT_TIMESTAMP);";
-
-	ExecuteSQL(sql.str());
 }
 
 bool DuckSyncMetadataManager::GetCache(const std::string &cache_name, CacheDefinition &out) {
