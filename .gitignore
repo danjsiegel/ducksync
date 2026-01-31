@@ -15,6 +15,7 @@ Thumbs.db
 
 # Test artifacts  
 duckdb_unittest_tempdir/
+test/data/
 *.db
 *.wal
 
