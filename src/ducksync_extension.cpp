@@ -494,8 +494,8 @@ struct DuckSyncQueryGlobalState : public GlobalTableFunctionState {
 struct DuckSyncQueryBindData : public TableFunctionData {
 	std::string sql_query;
 	std::string source_name;
-	std::string execution_query;   // The actual query to run (rewritten or passthrough)
-	bool use_cache = false;        // Whether we're using cache or passthrough
+	std::string execution_query; // The actual query to run (rewritten or passthrough)
+	bool use_cache = false;      // Whether we're using cache or passthrough
 	vector<LogicalType> result_types;
 	vector<string> result_names;
 };
@@ -613,7 +613,7 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 }
 
 static unique_ptr<GlobalTableFunctionState> DuckSyncQueryInitGlobal(ClientContext &context,
-                                                                     TableFunctionInitInput &input) {
+                                                                    TableFunctionInitInput &input) {
 	auto state = make_uniq<DuckSyncQueryGlobalState>();
 	auto &bind_data = input.bind_data->Cast<DuckSyncQueryBindData>();
 
