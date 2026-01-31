@@ -314,11 +314,13 @@ make release
 - **DuckLake extension** - auto-installed ([docs](https://ducklake.select/docs/))
 - **Snowflake extension** - auto-installed ([docs](https://duckdb.org/community_extensions/extensions/snowflake))
 
-## Limitations
+## Known Limitations
 
-- **Snowflake-only**: No support for other data sources yet
-- **Manual monitor_tables**: Tables to monitor must be explicitly specified
-- **No partial routing**: Entire query uses cache or passthrough, not mixed
+- **Snowflake-only**: Currently only supports Snowflake as a data source
+- **Manual monitor_tables**: Tables to monitor for changes must be explicitly specified when creating a cache
+- **All-or-nothing routing**: If a query references multiple tables and any one is not cached, the entire query passes through to Snowflake
+- **SELECT only**: Query rewriting only handles SELECT statements; DDL and DML pass through unchanged
+- **No prepared statement caching**: Internal metadata queries use string concatenation (safe for internal use, but prepared statements would be more robust)
 
 ## License
 

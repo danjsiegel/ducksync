@@ -382,11 +382,39 @@ static void DuckSyncRefreshFunction(ClientContext &context, TableFunctionInput &
 }
 
 //===--------------------------------------------------------------------===//
-// Table Extraction using DuckDB Parser
+// Table Extraction and AST Rewriting using DuckDB Parser
 //===--------------------------------------------------------------------===//
 
-// Forward declaration for recursive extraction
+// Rewrite info: catalog, schema, table_name
+struct TableRewrite {
+	std::string catalog;
+	std::string schema;
+	std::string table_name;
+};
+
+// Forward declarations
 static void ExtractTablesFromTableRef(TableRef &ref, std::unordered_set<std::string> &tables);
+static void RewriteTablesInTableRef(TableRef &ref, const std::unordered_map<std::string, TableRewrite> &rewrites);
+
+// Helper to build fully qualified table name for matching
+static std::string BuildFullTableName(const BaseTableRef &base) {
+	std::string full_name;
+	if (!base.catalog_name.empty()) {
+		full_name += base.catalog_name + ".";
+	}
+	if (!base.schema_name.empty()) {
+		full_name += base.schema_name + ".";
+	}
+	full_name += base.table_name;
+	return full_name;
+}
+
+// Helper to uppercase a string for case-insensitive comparison
+static std::string ToUpper(const std::string &str) {
+	std::string upper = str;
+	std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+	return upper;
+}
 
 static void ExtractTablesFromQueryNode(QueryNode &node, std::unordered_set<std::string> &tables) {
 	if (node.type == QueryNodeType::SELECT_NODE) {
@@ -402,16 +430,7 @@ static void ExtractTablesFromTableRef(TableRef &ref, std::unordered_set<std::str
 	switch (ref.type) {
 	case TableReferenceType::BASE_TABLE: {
 		auto &base = ref.Cast<BaseTableRef>();
-		// Build fully qualified name
-		std::string full_name;
-		if (!base.catalog_name.empty()) {
-			full_name += base.catalog_name + ".";
-		}
-		if (!base.schema_name.empty()) {
-			full_name += base.schema_name + ".";
-		}
-		full_name += base.table_name;
-		tables.insert(full_name);
+		tables.insert(BuildFullTableName(base));
 		break;
 	}
 	case TableReferenceType::JOIN: {
@@ -426,7 +445,48 @@ static void ExtractTablesFromTableRef(TableRef &ref, std::unordered_set<std::str
 		break;
 	}
 	default:
-		// Other types (expression list, table function, etc) - skip
+		break;
+	}
+}
+
+// Rewrite table references in the AST (modifies in place)
+static void RewriteTablesInQueryNode(QueryNode &node, const std::unordered_map<std::string, TableRewrite> &rewrites) {
+	if (node.type == QueryNodeType::SELECT_NODE) {
+		auto &select = node.Cast<SelectNode>();
+		if (select.from_table) {
+			RewriteTablesInTableRef(*select.from_table, rewrites);
+		}
+	}
+}
+
+static void RewriteTablesInTableRef(TableRef &ref, const std::unordered_map<std::string, TableRewrite> &rewrites) {
+	switch (ref.type) {
+	case TableReferenceType::BASE_TABLE: {
+		auto &base = ref.Cast<BaseTableRef>();
+		std::string full_name = ToUpper(BuildFullTableName(base));
+
+		// Check if this table should be rewritten (case-insensitive)
+		auto it = rewrites.find(full_name);
+		if (it != rewrites.end()) {
+			// Rewrite to DuckLake table: catalog.schema.table_name
+			base.catalog_name = it->second.catalog;
+			base.schema_name = it->second.schema;
+			base.table_name = it->second.table_name;
+		}
+		break;
+	}
+	case TableReferenceType::JOIN: {
+		auto &join = ref.Cast<JoinRef>();
+		RewriteTablesInTableRef(*join.left, rewrites);
+		RewriteTablesInTableRef(*join.right, rewrites);
+		break;
+	}
+	case TableReferenceType::SUBQUERY: {
+		auto &subquery = ref.Cast<SubqueryRef>();
+		RewriteTablesInQueryNode(*subquery.subquery->node, rewrites);
+		break;
+	}
+	default:
 		break;
 	}
 }
@@ -450,6 +510,30 @@ static std::vector<std::string> ExtractTableReferences(const std::string &sql) {
 	}
 
 	return std::vector<std::string>(tables.begin(), tables.end());
+}
+
+// Rewrite SQL query by modifying the AST and regenerating SQL
+static std::string RewriteQueryWithAST(const std::string &sql,
+                                       const std::unordered_map<std::string, TableRewrite> &rewrites) {
+	try {
+		Parser parser;
+		parser.ParseQuery(sql);
+
+		for (auto &stmt : parser.statements) {
+			if (stmt->type == StatementType::SELECT_STATEMENT) {
+				auto &select = stmt->Cast<SelectStatement>();
+				RewriteTablesInQueryNode(*select.node, rewrites);
+			}
+		}
+
+		// Regenerate SQL from modified AST
+		if (!parser.statements.empty()) {
+			return parser.statements[0]->ToString();
+		}
+	} catch (...) {
+		// If anything fails, return original
+	}
+	return sql;
 }
 
 //===--------------------------------------------------------------------===//
@@ -498,8 +582,9 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 	auto tables = ExtractTableReferences(result->sql_query);
 
 	// Check cache coverage and TTL validity
-	std::vector<std::pair<std::string, std::string>> rewrites; // original_table -> ducklake_table
-	std::vector<CacheDefinition> caches_to_refresh;            // caches with expired TTL
+	// Map: UPPER(original_table) -> TableRewrite for AST rewrite
+	std::unordered_map<std::string, TableRewrite> rewrites;
+	std::vector<CacheDefinition> caches_to_refresh;
 	bool all_cached = !tables.empty();
 
 	for (auto &table : tables) {
@@ -539,9 +624,13 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 				caches_to_refresh.push_back(cache);
 			}
 
-			std::string ducklake_table =
-			    state.storage_manager->GetDuckLakeTableName(cache.cache_name, cache.source_name);
-			rewrites.push_back({table, ducklake_table});
+			// Store rewrite info for AST modification
+			// DuckLake tables are: {catalog}.{source_name}.{cache_name}
+			TableRewrite rewrite;
+			rewrite.catalog = state.storage_manager->GetDuckLakeName();
+			rewrite.schema = cache.source_name;
+			rewrite.table_name = cache.cache_name;
+			rewrites[ToUpper(table)] = rewrite;
 		} else {
 			all_cached = false;
 			break;
@@ -552,39 +641,15 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 	if (!caches_to_refresh.empty()) {
 		RefreshOrchestrator orchestrator(context, *state.metadata_manager, *state.storage_manager);
 		for (auto &cache : caches_to_refresh) {
-			orchestrator.Refresh(cache.cache_name, false); // smart refresh (checks if actually changed)
+			orchestrator.Refresh(cache.cache_name, false); // smart refresh
 		}
 	}
 
 	// Determine execution strategy
 	if (all_cached && !rewrites.empty()) {
-		// Rewrite query to use DuckLake tables
+		// Rewrite query using AST modification (safe - only modifies table references)
 		result->use_cache = true;
-		std::string rewritten = result->sql_query;
-
-		// Sort rewrites by length (longest first) to avoid partial replacements
-		std::sort(rewrites.begin(), rewrites.end(),
-		          [](const std::pair<std::string, std::string> &a, const std::pair<std::string, std::string> &b) {
-			          return a.first.length() > b.first.length();
-		          });
-
-		for (auto &rewrite_pair : rewrites) {
-			const auto &original = rewrite_pair.first;
-			const auto &replacement = rewrite_pair.second;
-			// Case-insensitive replacement
-			std::string upper_rewritten = rewritten;
-			std::transform(upper_rewritten.begin(), upper_rewritten.end(), upper_rewritten.begin(), ::toupper);
-			std::string upper_original = original;
-			std::transform(upper_original.begin(), upper_original.end(), upper_original.begin(), ::toupper);
-
-			size_t pos = 0;
-			while ((pos = upper_rewritten.find(upper_original, pos)) != std::string::npos) {
-				rewritten.replace(pos, original.length(), replacement);
-				upper_rewritten.replace(pos, original.length(), replacement);
-				pos += replacement.length();
-			}
-		}
-		result->execution_query = rewritten;
+		result->execution_query = RewriteQueryWithAST(result->sql_query, rewrites);
 	} else {
 		// Pass through to Snowflake
 		result->use_cache = false;
