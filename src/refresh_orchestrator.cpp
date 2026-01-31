@@ -141,6 +141,7 @@ RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
 	auto conn = MakeConnection(context_);
 
 	// Build IN clause for table names
+	// Note: Use double single quotes because this will be inside a snowflake_query string
 	std::ostringstream tables_in;
 	tables_in << "(";
 	for (size_t i = 0; i < monitor_tables.size(); i++) {
@@ -152,15 +153,26 @@ RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
 		if (last_dot != std::string::npos) {
 			table_name = table_name.substr(last_dot + 1);
 		}
-		tables_in << "'" << table_name << "'";
+		// Escape quotes for nested SQL string
+		tables_in << "''" << table_name << "''";
 	}
 	tables_in << ")";
 
 	// Query Snowflake information_schema via snowflake_query
 	// Signature: snowflake_query(query_string, secret_name)
+	// Extract database name from first monitor table (e.g., DUCKSYNC_TEST.TEST_DATA.CUSTOMERS -> DUCKSYNC_TEST)
+	std::string db_name;
+	if (!monitor_tables.empty()) {
+		std::string first_table = monitor_tables[0];
+		size_t first_dot = first_table.find('.');
+		if (first_dot != std::string::npos) {
+			db_name = first_table.substr(0, first_dot);
+		}
+	}
+
 	std::ostringstream sf_query;
-	sf_query << "SELECT table_catalog || ''.'' || table_schema || ''.'' || table_name as full_name, "
-	         << "last_altered FROM information_schema.tables "
+	sf_query << "SELECT CONCAT(table_catalog, ''.'', table_schema, ''.'', table_name) as full_name, "
+	         << "last_altered FROM " << db_name << ".information_schema.tables "
 	         << "WHERE table_name IN " << tables_in.str();
 
 	std::ostringstream query;
@@ -214,10 +226,20 @@ std::string RefreshOrchestrator::GenerateStateHash(const std::unordered_map<std:
 int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const SourceDefinition &source) {
 	auto conn = MakeConnection(context_);
 
+	// Escape single quotes in source query
+	std::string escaped_query;
+	for (char c : cache.source_query) {
+		if (c == '\'') {
+			escaped_query += "''";
+		} else {
+			escaped_query += c;
+		}
+	}
+
 	// Execute query via Snowflake extension
 	// Signature: snowflake_query(query_string, secret_name)
 	std::ostringstream query;
-	query << "SELECT * FROM snowflake_query('" << cache.source_query << "', '" << source.secret_name << "');";
+	query << "SELECT * FROM snowflake_query('" << escaped_query << "', '" << source.secret_name << "');";
 
 	auto result = conn.Query(query.str());
 	if (result->HasError()) {
@@ -246,7 +268,7 @@ int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const 
 	// Signature: snowflake_query(query_string, secret_name)
 	std::ostringstream create_table;
 	create_table << "CREATE OR REPLACE TABLE " << table_name << " AS "
-	             << "SELECT * FROM snowflake_query('" << cache.source_query << "', '" << source.secret_name << "');";
+	             << "SELECT * FROM snowflake_query('" << escaped_query << "', '" << source.secret_name << "');";
 
 	auto create_result = conn.Query(create_table.str());
 	if (create_result->HasError()) {

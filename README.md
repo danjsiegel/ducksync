@@ -17,8 +17,14 @@ DuckSync automatically installs the required extensions (DuckLake, Snowflake) on
 You'll need:
 1. **PostgreSQL database** - for DuckLake catalog storage
 2. **Snowflake account** - with a configured DuckDB secret
+3. **ADBC Snowflake driver** - native library for Snowflake connectivity
 
-For Snowflake setup, see: [Snowflake Extension Docs](https://duckdb.org/community_extensions/extensions/snowflake)
+### Snowflake Setup
+
+1. Create a DuckDB secret with your Snowflake credentials
+2. Install the ADBC Snowflake driver - see [ADBC Driver Setup](https://github.com/iqea-ai/duckdb-snowflake#adbc-driver-setup)
+
+For more details: [Snowflake Extension Docs](https://duckdb.org/community_extensions/extensions/snowflake)
 
 ## Installation
 
@@ -52,9 +58,11 @@ SELECT * FROM ducksync_create_cache(
     3600
 );
 
--- Refresh and query
+-- Refresh the cache
 SELECT * FROM ducksync_refresh('sales_summary');
-SELECT * FROM sales_summary;
+
+-- Query via ducksync_query (smart routing)
+SELECT * FROM ducksync_query('SELECT * FROM PROD.PUBLIC.SALES WHERE region = ''US''', 'prod');
 ```
 
 ### Option B: Full Setup (New Users)
@@ -128,43 +136,52 @@ Refresh a cache with smart check logic.
 - `rows_refreshed`: Number of rows (if refreshed)
 - `duration_ms`: Refresh duration in milliseconds
 
-### `ducksync_passthrough_query(sql_query, source_name)`
+### `ducksync_query(sql_query, source_name)`
 
-Execute a query with smart routing: checks cache first, falls back to Snowflake.
+**The main query interface.** Executes queries with smart routing - returns actual data (not status messages).
 
 **Parameters:**
 - `sql_query`: SQL query to execute (use Snowflake table names)
-- `source_name`: Source to use for Snowflake execution
+- `source_name`: Source to use for execution
 
-**Behavior:**
-- **Simple query (single table)**: Checks if table is cached → uses cache if found
-- **Complex query (JOINs, UNIONs, etc.)**: Passes directly to Snowflake
+**Routing Logic:**
+1. Parses SQL using DuckDB's parser to extract all table references
+2. Checks if each table is cached (by cache name or monitored table)
+3. **All tables cached** → Rewrites query to use local DuckLake tables
+4. **Any table not cached** → Passes entire query to Snowflake
 
 **Examples:**
 ```sql
--- Simple query - table IS cached → hits local cache
-SELECT * FROM ducksync_passthrough_query(
-    'SELECT * FROM PROD.PUBLIC.SALES_SUMMARY',
+-- Table IS cached → executes locally (fast, no Snowflake calls)
+SELECT * FROM ducksync_query(
+    'SELECT * FROM PROD.PUBLIC.CUSTOMERS WHERE region = ''US''',
     'prod'
 );
--- Returns: "Cache hit: 100 rows from ducksync.prod.sales_summary"
+-- Returns actual data from local cache
 
--- Simple query - table NOT cached → Snowflake
-SELECT * FROM ducksync_passthrough_query(
-    'SELECT * FROM PROD.PUBLIC.RAW_ORDERS WHERE date > ''2024-01-01''',
+-- Table NOT cached → passthrough to Snowflake
+SELECT * FROM ducksync_query(
+    'SELECT * FROM PROD.PUBLIC.RAW_ORDERS LIMIT 100',
     'prod'
 );
--- Returns: "Passthrough: 5000 rows from Snowflake"
+-- Returns actual data from Snowflake
 
--- Complex query (JOIN) → always Snowflake (doesn't try to parse)
-SELECT * FROM ducksync_passthrough_query(
-    'SELECT a.*, b.name FROM orders a JOIN customers b ON a.cust_id = b.id',
+-- JOIN with mixed tables (1 cached, 1 not) → passthrough to Snowflake
+SELECT * FROM ducksync_query(
+    'SELECT c.*, o.total FROM CUSTOMERS c JOIN ORDERS o ON c.id = o.customer_id',
     'prod'
 );
--- Returns: "Passthrough: 200 rows from Snowflake"
+-- Entire query executes on Snowflake
+
+-- Complex aggregation from cache
+SELECT * FROM ducksync_query(
+    'SELECT region, COUNT(*) as cnt FROM PROD.PUBLIC.CUSTOMERS GROUP BY region',
+    'prod'
+);
+-- Aggregation runs locally on cached data
 ```
 
-**Note:** Cache names should match your Snowflake table names for transparent routing.
+**Best Practice:** Create caches with `monitor_tables` matching your Snowflake table names for automatic routing.
 
 ## Smart Refresh Logic
 
@@ -221,6 +238,7 @@ This approach means:
 
 - Docker (for PostgreSQL)
 - DuckDB v1.4.2+
+- ADBC Snowflake driver (for Snowflake integration tests)
 
 ### Run Tests
 
@@ -228,13 +246,20 @@ This approach means:
 # Build and run integration tests
 make test
 
+# Reset test environment (clean slate)
+make reset-test
+
 # Or manually:
 cd test && docker compose up -d postgres
 ./test/run_tests.sh
 
-# Stop PostgreSQL
-make test-docker-down
+# Cleanup
+make test-docker-down    # Stop PostgreSQL
+make clean-test-data     # Remove local test files
+make clean-all           # Full cleanup (Docker + data + build)
 ```
+
+For Snowflake integration tests, see [test/README.md](test/README.md).
 
 ## Building from Source
 

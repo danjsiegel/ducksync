@@ -59,8 +59,14 @@ public:
 	// Cache CRUD
 	void CreateCache(const CacheDefinition &cache);
 	bool GetCache(const std::string &cache_name, CacheDefinition &out);
+	bool GetCacheByMonitorTable(const std::string &table_name, CacheDefinition &out);
 	std::vector<CacheDefinition> ListCaches();
 	void DeleteCache(const std::string &cache_name);
+
+	// Get the DuckLake name for constructing table paths
+	std::string GetDuckLakeName() const {
+		return ducklake_name_;
+	}
 
 	// State operations
 	void InitializeState(const std::string &cache_name);
