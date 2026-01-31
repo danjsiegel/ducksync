@@ -1,0 +1,88 @@
+# name: test/sql/test_errors.test
+# description: Error handling tests for DuckSync extension
+# group: [sql]
+
+# Tests for various error scenarios and failure modes
+
+require ducksync
+
+# =============================================================================
+# UNINITIALIZED STATE ERRORS
+# =============================================================================
+
+# All functions should fail cleanly before initialization
+statement error
+SELECT * FROM ducksync_add_source('test', 'snowflake', 'my_secret');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_create_cache('test', 'src', 'SELECT 1', ['T'], 3600);
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_refresh('test');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_query('SELECT 1', 'test');
+----
+DuckSync not initialized
+
+# Note: ducksync_list_caches() function not yet implemented
+
+# =============================================================================
+# INVALID CATALOG ERRORS
+# =============================================================================
+
+# Init with non-existent catalog
+statement error
+SELECT * FROM ducksync_init('nonexistent_catalog');
+----
+Catalog 'nonexistent_catalog' not found
+
+# =============================================================================
+# ARGUMENT TYPE ERRORS
+# =============================================================================
+
+# Wrong argument types
+statement error
+SELECT * FROM ducksync_init(12345);
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_setup_storage(123, '/path');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_setup_storage('conn', 456);
+----
+No function matches
+
+# =============================================================================
+# MISSING ARGUMENTS
+# =============================================================================
+
+statement error
+SELECT * FROM ducksync_create_cache('name', 'source');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_create_cache('name', 'source', 'query');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_add_source('name');
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_add_source('name', 'driver');
+----
+No function matches

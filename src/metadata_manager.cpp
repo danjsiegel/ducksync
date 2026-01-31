@@ -193,8 +193,9 @@ void DuckSyncMetadataManager::CreateCache(const CacheDefinition &cache) {
 	std::ostringstream tables_array;
 	tables_array << "[";
 	for (size_t i = 0; i < cache.monitor_tables.size(); i++) {
-		if (i > 0)
+		if (i > 0) {
 			tables_array << ", ";
+		}
 		tables_array << "'" << EscapeSQLString(cache.monitor_tables[i]) << "'";
 	}
 	tables_array << "]";

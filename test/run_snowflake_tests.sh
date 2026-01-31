@@ -221,8 +221,8 @@ CREATE SECRET sf_test (
 SELECT * FROM ducksync_setup_storage('$PG_CONN', '$TEST_DATA_DIR');
 SELECT * FROM ducksync_add_source('sf', 'snowflake', 'sf_test');
 
--- Passthrough query (not cached)
-SELECT * FROM ducksync_passthrough_query(
+-- Query via ducksync_query (passthrough since not cached)
+SELECT * FROM ducksync_query(
     'SELECT region, COUNT(*) as customer_count FROM $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS GROUP BY region',
     'sf'
 );
