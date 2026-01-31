@@ -320,7 +320,6 @@ make release
 - **Manual monitor_tables**: Tables to monitor for changes must be explicitly specified when creating a cache
 - **All-or-nothing routing**: If a query references multiple tables and any one is not cached, the entire query passes through to Snowflake
 - **SELECT only**: Query rewriting only handles SELECT statements; DDL and DML pass through unchanged
-- **No prepared statement caching**: Internal metadata queries use string concatenation (safe for internal use, but prepared statements would be more robust)
 
 ## License
 
