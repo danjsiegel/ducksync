@@ -270,7 +270,7 @@ This approach means:
 ### Prerequisites
 
 - Docker (for PostgreSQL)
-- DuckDB v1.4.2+
+- DuckDB v1.4.4+
 - ADBC Snowflake driver (for Snowflake integration tests)
 
 ### Run Tests
