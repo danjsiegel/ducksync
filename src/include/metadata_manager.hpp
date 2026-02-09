@@ -10,7 +10,7 @@ struct SourceDefinition {
 	std::string source_name;
 	std::string driver_type;
 	std::string secret_name;
-	bool passthrough_enabled;
+	bool passthrough_enabled = false;
 	std::string created_at;
 };
 
@@ -19,8 +19,8 @@ struct CacheDefinition {
 	std::string source_name;
 	std::string source_query;
 	std::vector<std::string> monitor_tables;
-	int64_t ttl_seconds;
-	bool has_ttl;
+	int64_t ttl_seconds = 0;
+	bool has_ttl = false;
 	std::string created_at;
 };
 

@@ -85,20 +85,23 @@ void DuckSyncMetadataManager::CreateSource(const SourceDefinition &source) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
+	Connection conn(*context_.db);
+
 	// DuckLake doesn't support ON CONFLICT, so delete then insert
-	std::ostringstream delete_sql;
-	delete_sql << "DELETE FROM " << TableName("sources") << " WHERE source_name = '" << source.source_name << "';";
-	ExecuteSQL(delete_sql.str());
+	auto delete_stmt = conn.Prepare("DELETE FROM " + TableName("sources") + " WHERE source_name = $1");
+	auto delete_result = delete_stmt->Execute(source.source_name);
+	if (delete_result->HasError()) {
+		throw InternalException("Failed to delete existing source: %s", delete_result->GetError().c_str());
+	}
 
-	std::ostringstream sql;
-	sql << "INSERT INTO " << TableName("sources")
-	    << " (source_name, driver_type, secret_name, passthrough_enabled, created_at) VALUES ("
-	    << "'" << source.source_name << "', "
-	    << "'" << source.driver_type << "', "
-	    << "'" << source.secret_name << "', " << (source.passthrough_enabled ? "TRUE" : "FALSE") << ", "
-	    << "CURRENT_TIMESTAMP);";
-
-	ExecuteSQL(sql.str());
+	auto insert_stmt = conn.Prepare("INSERT INTO " + TableName("sources") +
+	                                " (source_name, driver_type, secret_name, passthrough_enabled, created_at) "
+	                                "VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)");
+	auto insert_result =
+	    insert_stmt->Execute(source.source_name, source.driver_type, source.secret_name, source.passthrough_enabled);
+	if (insert_result->HasError()) {
+		throw InternalException("Failed to create source: %s", insert_result->GetError().c_str());
+	}
 }
 
 bool DuckSyncMetadataManager::GetSource(const std::string &source_name, SourceDefinition &out) {
@@ -106,21 +109,26 @@ bool DuckSyncMetadataManager::GetSource(const std::string &source_name, SourceDe
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
-	std::ostringstream sql;
-	sql << "SELECT source_name, driver_type, secret_name, passthrough_enabled, created_at "
-	    << "FROM " << TableName("sources") << " WHERE source_name = '" << source_name << "';";
+	Connection conn(*context_.db);
+	auto stmt = conn.Prepare("SELECT source_name, driver_type, secret_name, passthrough_enabled, created_at "
+	                         "FROM " +
+	                         TableName("sources") + " WHERE source_name = $1");
+	vector<Value> params = {Value(source_name)};
+	auto result = stmt->Execute(params, false);
+	if (result->HasError()) {
+		throw InternalException("Failed to get source: %s", result->GetError().c_str());
+	}
 
-	auto result = QuerySQL(sql.str());
-
-	if (result->RowCount() == 0) {
+	auto &materialized = result->Cast<MaterializedQueryResult>();
+	if (materialized.RowCount() == 0) {
 		return false;
 	}
 
-	out.source_name = result->GetValue(0, 0).ToString();
-	out.driver_type = result->GetValue(1, 0).ToString();
-	out.secret_name = result->GetValue(2, 0).ToString();
-	out.passthrough_enabled = result->GetValue(3, 0).GetValue<bool>();
-	out.created_at = result->GetValue(4, 0).ToString();
+	out.source_name = materialized.GetValue(0, 0).ToString();
+	out.driver_type = materialized.GetValue(1, 0).ToString();
+	out.secret_name = materialized.GetValue(2, 0).ToString();
+	out.passthrough_enabled = materialized.GetValue(3, 0).GetValue<bool>();
+	out.created_at = materialized.GetValue(4, 0).ToString();
 
 	return true;
 }
@@ -156,9 +164,12 @@ void DuckSyncMetadataManager::DeleteSource(const std::string &source_name) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
-	std::ostringstream sql;
-	sql << "DELETE FROM " << TableName("sources") << " WHERE source_name = '" << source_name << "';";
-	ExecuteSQL(sql.str());
+	Connection conn(*context_.db);
+	auto stmt = conn.Prepare("DELETE FROM " + TableName("sources") + " WHERE source_name = $1");
+	auto result = stmt->Execute(source_name);
+	if (result->HasError()) {
+		throw InternalException("Failed to delete source: %s", result->GetError().c_str());
+	}
 }
 
 //===--------------------------------------------------------------------===//
@@ -188,7 +199,7 @@ void DuckSyncMetadataManager::CreateCache(const CacheDefinition &cache) {
 	                                " (cache_name, source_name, source_query, monitor_tables, ttl_seconds, created_at) "
 	                                "VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)");
 
-	Value ttl_value = cache.has_ttl ? Value::INTEGER(cache.ttl_seconds) : Value(LogicalType::INTEGER);
+	Value ttl_value = cache.has_ttl ? Value::BIGINT(cache.ttl_seconds) : Value(LogicalType::BIGINT);
 
 	auto result = insert_stmt->Execute(cache.cache_name, cache.source_name, cache.source_query, tables_list, ttl_value);
 	if (result->HasError()) {
@@ -201,23 +212,28 @@ bool DuckSyncMetadataManager::GetCache(const std::string &cache_name, CacheDefin
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
-	std::ostringstream sql;
-	sql << "SELECT cache_name, source_name, source_query, monitor_tables, ttl_seconds, created_at "
-	    << "FROM " << TableName("caches") << " WHERE cache_name = '" << cache_name << "';";
+	Connection conn(*context_.db);
+	auto stmt = conn.Prepare("SELECT cache_name, source_name, source_query, monitor_tables, ttl_seconds, created_at "
+	                         "FROM " +
+	                         TableName("caches") + " WHERE cache_name = $1");
+	vector<Value> params = {Value(cache_name)};
+	auto result = stmt->Execute(params, false);
+	if (result->HasError()) {
+		throw InternalException("Failed to get cache: %s", result->GetError().c_str());
+	}
 
-	auto result = QuerySQL(sql.str());
-
-	if (result->RowCount() == 0) {
+	auto &materialized = result->Cast<MaterializedQueryResult>();
+	if (materialized.RowCount() == 0) {
 		return false;
 	}
 
-	out.cache_name = result->GetValue(0, 0).ToString();
-	out.source_name = result->GetValue(1, 0).ToString();
-	out.source_query = result->GetValue(2, 0).ToString();
+	out.cache_name = materialized.GetValue(0, 0).ToString();
+	out.source_name = materialized.GetValue(1, 0).ToString();
+	out.source_query = materialized.GetValue(2, 0).ToString();
 
 	// Parse monitor_tables from list
 	out.monitor_tables.clear();
-	auto tables_value = result->GetValue(3, 0);
+	auto tables_value = materialized.GetValue(3, 0);
 	if (tables_value.type().id() == LogicalTypeId::LIST) {
 		auto &list_children = ListValue::GetChildren(tables_value);
 		for (auto &child : list_children) {
@@ -225,7 +241,7 @@ bool DuckSyncMetadataManager::GetCache(const std::string &cache_name, CacheDefin
 		}
 	}
 
-	auto ttl_value = result->GetValue(4, 0);
+	auto ttl_value = materialized.GetValue(4, 0);
 	if (!ttl_value.IsNull()) {
 		out.ttl_seconds = ttl_value.GetValue<int64_t>();
 		out.has_ttl = true;
@@ -234,7 +250,7 @@ bool DuckSyncMetadataManager::GetCache(const std::string &cache_name, CacheDefin
 		out.has_ttl = false;
 	}
 
-	out.created_at = result->GetValue(5, 0).ToString();
+	out.created_at = materialized.GetValue(5, 0).ToString();
 
 	return true;
 }
@@ -312,9 +328,12 @@ void DuckSyncMetadataManager::DeleteCache(const std::string &cache_name) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
-	std::ostringstream sql;
-	sql << "DELETE FROM " << TableName("caches") << " WHERE cache_name = '" << cache_name << "';";
-	ExecuteSQL(sql.str());
+	Connection conn(*context_.db);
+	auto stmt = conn.Prepare("DELETE FROM " + TableName("caches") + " WHERE cache_name = $1");
+	auto result = stmt->Execute(cache_name);
+	if (result->HasError()) {
+		throw InternalException("Failed to delete cache: %s", result->GetError().c_str());
+	}
 }
 
 //===--------------------------------------------------------------------===//
@@ -332,9 +351,12 @@ void DuckSyncMetadataManager::InitializeState(const std::string &cache_name) {
 		return; // Already initialized
 	}
 
-	std::ostringstream sql;
-	sql << "INSERT INTO " << TableName("state") << " (cache_name, refresh_count) VALUES ('" << cache_name << "', 0);";
-	ExecuteSQL(sql.str());
+	Connection conn(*context_.db);
+	auto stmt = conn.Prepare("INSERT INTO " + TableName("state") + " (cache_name, refresh_count) VALUES ($1, 0)");
+	auto result = stmt->Execute(cache_name);
+	if (result->HasError()) {
+		throw InternalException("Failed to initialize state: %s", result->GetError().c_str());
+	}
 }
 
 void DuckSyncMetadataManager::UpdateState(const CacheState &state) {
@@ -342,55 +364,44 @@ void DuckSyncMetadataManager::UpdateState(const CacheState &state) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
+	Connection conn(*context_.db);
+
 	// Get current refresh_count before deleting
 	int64_t refresh_count = 0;
-	CacheState existing;
-	if (GetState(state.cache_name, existing)) {
-		// Query refresh_count separately since GetState doesn't return it
-		std::ostringstream count_sql;
-		count_sql << "SELECT refresh_count FROM " << TableName("state") << " WHERE cache_name = '" << state.cache_name
-		          << "';";
-		auto count_result = QuerySQL(count_sql.str());
-		if (count_result->RowCount() > 0 && !count_result->GetValue(0, 0).IsNull()) {
-			refresh_count = count_result->GetValue(0, 0).GetValue<int64_t>();
+	{
+		auto count_stmt =
+		    conn.Prepare("SELECT refresh_count FROM " + TableName("state") + " WHERE cache_name = $1");
+		vector<Value> count_params = {Value(state.cache_name)};
+		auto count_result = count_stmt->Execute(count_params, false);
+		if (!count_result->HasError()) {
+			auto &count_mat = count_result->Cast<MaterializedQueryResult>();
+			if (count_mat.RowCount() > 0 && !count_mat.GetValue(0, 0).IsNull()) {
+				refresh_count = count_mat.GetValue(0, 0).GetValue<int64_t>();
+			}
 		}
 	}
 
 	// DuckLake doesn't support ON CONFLICT, so delete then insert
-	std::ostringstream delete_sql;
-	delete_sql << "DELETE FROM " << TableName("state") << " WHERE cache_name = '" << state.cache_name << "';";
-	ExecuteSQL(delete_sql.str());
-
-	std::ostringstream sql;
-	sql << "INSERT INTO " << TableName("state")
-	    << " (cache_name, last_refresh, source_state_hash, expires_at, refresh_count) VALUES ("
-	    << "'" << state.cache_name << "', ";
-
-	if (state.HasLastRefresh()) {
-		sql << "'" << state.last_refresh << "'";
-	} else {
-		sql << "NULL";
+	auto delete_stmt = conn.Prepare("DELETE FROM " + TableName("state") + " WHERE cache_name = $1");
+	auto delete_result = delete_stmt->Execute(state.cache_name);
+	if (delete_result->HasError()) {
+		throw InternalException("Failed to delete state: %s", delete_result->GetError().c_str());
 	}
 
-	sql << ", ";
+	auto insert_stmt = conn.Prepare(
+	    "INSERT INTO " + TableName("state") +
+	    " (cache_name, last_refresh, source_state_hash, expires_at, refresh_count) VALUES ($1, $2, $3, $4, $5)");
 
-	if (state.HasStateHash()) {
-		sql << "'" << state.source_state_hash << "'";
-	} else {
-		sql << "NULL";
+	Value last_refresh_val = state.HasLastRefresh() ? Value(state.last_refresh) : Value(LogicalType::VARCHAR);
+	Value state_hash_val = state.HasStateHash() ? Value(state.source_state_hash) : Value(LogicalType::VARCHAR);
+	Value expires_at_val = state.HasExpiresAt() ? Value(state.expires_at) : Value(LogicalType::VARCHAR);
+	Value refresh_count_val = Value::BIGINT(refresh_count + 1);
+
+	auto insert_result =
+	    insert_stmt->Execute(state.cache_name, last_refresh_val, state_hash_val, expires_at_val, refresh_count_val);
+	if (insert_result->HasError()) {
+		throw InternalException("Failed to update state: %s", insert_result->GetError().c_str());
 	}
-
-	sql << ", ";
-
-	if (state.HasExpiresAt()) {
-		sql << "'" << state.expires_at << "'";
-	} else {
-		sql << "NULL";
-	}
-
-	sql << ", " << (refresh_count + 1) << ");";
-
-	ExecuteSQL(sql.str());
 }
 
 bool DuckSyncMetadataManager::GetState(const std::string &cache_name, CacheState &out) {
@@ -398,25 +409,30 @@ bool DuckSyncMetadataManager::GetState(const std::string &cache_name, CacheState
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}
 
-	std::ostringstream sql;
-	sql << "SELECT cache_name, last_refresh, source_state_hash, expires_at "
-	    << "FROM " << TableName("state") << " WHERE cache_name = '" << cache_name << "';";
+	Connection conn(*context_.db);
+	auto stmt = conn.Prepare("SELECT cache_name, last_refresh, source_state_hash, expires_at "
+	                         "FROM " +
+	                         TableName("state") + " WHERE cache_name = $1");
+	vector<Value> params = {Value(cache_name)};
+	auto result = stmt->Execute(params, false);
+	if (result->HasError()) {
+		throw InternalException("Failed to get state: %s", result->GetError().c_str());
+	}
 
-	auto result = QuerySQL(sql.str());
-
-	if (result->RowCount() == 0) {
+	auto &materialized = result->Cast<MaterializedQueryResult>();
+	if (materialized.RowCount() == 0) {
 		return false;
 	}
 
-	out.cache_name = result->GetValue(0, 0).ToString();
+	out.cache_name = materialized.GetValue(0, 0).ToString();
 
-	auto last_refresh = result->GetValue(1, 0);
+	auto last_refresh = materialized.GetValue(1, 0);
 	out.last_refresh = last_refresh.IsNull() ? "" : last_refresh.ToString();
 
-	auto state_hash = result->GetValue(2, 0);
+	auto state_hash = materialized.GetValue(2, 0);
 	out.source_state_hash = state_hash.IsNull() ? "" : state_hash.ToString();
 
-	auto expires_at = result->GetValue(3, 0);
+	auto expires_at = materialized.GetValue(3, 0);
 	out.expires_at = expires_at.IsNull() ? "" : expires_at.ToString();
 
 	return true;
