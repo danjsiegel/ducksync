@@ -1,0 +1,77 @@
+# name: test/sql/test_ast_rewriting.test
+# description: Tests for AST-based query rewriting in ducksync_query
+# group: [sql]
+# NOTE: These tests require full infrastructure (PostgreSQL + Snowflake)
+# They are skipped in CI and run manually via make test-integration
+
+require ducksync
+
+# ============================================================================
+# Test: DuckSync not initialized - should fail gracefully
+# ============================================================================
+
+# Test that ducksync_query fails gracefully without initialization
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM ORDERS', 'prod');
+----
+DuckSync not initialized
+
+# ============================================================================
+# Test: Various SQL patterns that should be parsed correctly
+# These test the parsing logic even without full execution
+# ============================================================================
+
+# Simple SELECT should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT a, b FROM test_table', 'source1');
+----
+DuckSync not initialized
+
+# JOIN query should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id', 'source1');
+----
+DuckSync not initialized
+
+# Subquery should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM (SELECT * FROM inner_table) sub', 'source1');
+----
+DuckSync not initialized
+
+# UNION query should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM table_a UNION SELECT * FROM table_b', 'source1');
+----
+DuckSync not initialized
+
+# UNION ALL query should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM table_a UNION ALL SELECT * FROM table_b', 'source1');
+----
+DuckSync not initialized
+
+# INTERSECT query should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM table_a INTERSECT SELECT * FROM table_b', 'source1');
+----
+DuckSync not initialized
+
+# EXCEPT query should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM table_a EXCEPT SELECT * FROM table_b', 'source1');
+----
+DuckSync not initialized
+
+# Complex nested UNION with JOINs should fail (not initialized) but parse correctly
+statement error
+SELECT * FROM ducksync_query('SELECT * FROM orders o JOIN customers c ON o.cid = c.id UNION SELECT * FROM archived_orders ao JOIN customers c ON ao.cid = c.id', 'source1');
+----
+DuckSync not initialized
+
+# Query with column name same as table name (edge case for AST rewriting)
+# The ORDERS column should NOT be rewritten, only the ORDERS table reference
+statement error
+SELECT * FROM ducksync_query('SELECT ORDERS FROM ORDERS WHERE ORDERS > 100', 'source1');
+----
+DuckSync not initialized

@@ -133,6 +133,38 @@ SELECT * FROM ducksync_query('SELECT * FROM customers_cache LIMIT 5', 'prod');
 SELECT '=== Testing ducksync_query (Passthrough) ===' as section;
 SELECT * FROM ducksync_query('SELECT * FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.PRODUCTS LIMIT 5', 'prod');
 
+-- Test UNION queries (SetOperationNode handling)
+SELECT '=== Testing UNION Query (Both Tables Cached) ===' as section;
+-- First create a second cache for ORDERS
+SELECT * FROM ducksync_create_cache(
+    'orders_cache',
+    'prod',
+    'SELECT * FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.ORDERS',
+    ['${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.ORDERS'],
+    3600
+);
+SELECT * FROM ducksync_refresh('orders_cache');
+
+-- Now test UNION with both cached tables (use ID from CUSTOMERS and CUSTOMER_ID from ORDERS)
+SELECT * FROM ducksync_query('
+    SELECT ID FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.CUSTOMERS 
+    UNION 
+    SELECT CUSTOMER_ID FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.ORDERS
+', 'prod');
+
+-- Test UNION with mixed cached/uncached (should passthrough to Snowflake)
+SELECT '=== Testing UNION Query (Mixed - Should Passthrough) ===' as section;
+SELECT * FROM ducksync_query('
+    SELECT ID FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.CUSTOMERS 
+    UNION 
+    SELECT ID FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.PRODUCTS
+', 'prod');
+
+-- Test column name same as table name (AST rewriting edge case)
+SELECT '=== Testing Column Name = Table Name (Edge Case) ===' as section;
+-- This should NOT rewrite the ID column, only the CUSTOMERS table reference
+SELECT * FROM ducksync_query('SELECT ID, NAME FROM ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.CUSTOMERS WHERE ID > 0 LIMIT 3', 'prod');
+
 -- Test TTL expiry and auto-refresh
 SELECT '=== Testing TTL Expiry (Forcing Expired State) ===' as section;
 
