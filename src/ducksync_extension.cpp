@@ -42,6 +42,7 @@ namespace duckdb {
 struct SetupStorageBindData : public TableFunctionData {
 	std::string pg_connection_string;
 	std::string data_path;
+	std::string schema_name = "ducksync"; // optional 3rd arg; defaults to "ducksync"
 	bool done = false;
 };
 
@@ -50,11 +51,17 @@ static unique_ptr<FunctionData> DuckSyncSetupStorageBind(ClientContext &context,
 	auto result = make_uniq<SetupStorageBindData>();
 
 	if (input.inputs.size() < 2) {
-		throw InvalidInputException("ducksync_setup_storage requires 2 arguments: pg_connection_string, data_path");
+		throw InvalidInputException(
+		    "ducksync_setup_storage requires at least 2 arguments: pg_connection_string, data_path[, schema_name]");
 	}
 
 	result->pg_connection_string = input.inputs[0].GetValue<string>();
 	result->data_path = input.inputs[1].GetValue<string>();
+
+	// Optional 3rd argument: schema_name (default "ducksync")
+	if (input.inputs.size() >= 3) {
+		result->schema_name = input.inputs[2].GetValue<string>();
+	}
 
 	// Don't do any work here - defer to the Function execution phase
 	names.emplace_back("status");
@@ -82,7 +89,7 @@ static void DuckSyncSetupStorageFunction(ClientContext &context, TableFunctionIn
 	if (!state.metadata_manager) {
 		state.metadata_manager = make_uniq<DuckSyncMetadataManager>(context);
 	}
-	state.metadata_manager->Initialize(state.storage_manager->GetDuckLakeName());
+	state.metadata_manager->Initialize(state.storage_manager->GetDuckLakeName(), bind_data.schema_name);
 
 	state.initialized = true;
 	bind_data.done = true;
@@ -92,11 +99,13 @@ static void DuckSyncSetupStorageFunction(ClientContext &context, TableFunctionIn
 }
 
 //===--------------------------------------------------------------------===//
-// ducksync_init(catalog_name)
+// ducksync_init(catalog_name[, schema_name])
 // - Use an existing DuckLake catalog for DuckSync storage
+// - schema_name defaults to "ducksync" for backward compatibility
 //===--------------------------------------------------------------------===//
 struct InitBindData : public TableFunctionData {
 	std::string catalog_name;
+	std::string schema_name = "ducksync"; // optional 2nd arg; defaults to "ducksync"
 	bool done = false;
 };
 
@@ -105,10 +114,16 @@ static unique_ptr<FunctionData> DuckSyncInitBind(ClientContext &context, TableFu
 	auto result = make_uniq<InitBindData>();
 
 	if (input.inputs.empty()) {
-		throw InvalidInputException("ducksync_init requires 1 argument: catalog_name (your existing DuckLake catalog)");
+		throw InvalidInputException(
+		    "ducksync_init requires at least 1 argument: catalog_name[, schema_name]");
 	}
 
 	result->catalog_name = input.inputs[0].GetValue<string>();
+
+	// Optional 2nd argument: schema_name (default "ducksync")
+	if (input.inputs.size() >= 2) {
+		result->schema_name = input.inputs[1].GetValue<string>();
+	}
 
 	names.emplace_back("status");
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -131,17 +146,20 @@ static void DuckSyncInitFunction(ClientContext &context, TableFunctionInput &dat
 	}
 	state.storage_manager->UseExistingCatalog(bind_data.catalog_name);
 
-	// Initialize metadata manager (creates ducksync schema and tables)
+	// Initialize metadata manager (creates metadata schema and tables)
 	if (!state.metadata_manager) {
 		state.metadata_manager = make_uniq<DuckSyncMetadataManager>(context);
 	}
-	state.metadata_manager->Initialize(bind_data.catalog_name);
+	state.metadata_manager->Initialize(bind_data.catalog_name, bind_data.schema_name);
 
 	state.initialized = true;
 	bind_data.done = true;
 
 	output.SetCardinality(1);
-	output.SetValue(0, 0, Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'"));
+	output.SetValue(0, 0, Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'" +
+	                            (bind_data.schema_name != "ducksync"
+	                                 ? " (schema: '" + bind_data.schema_name + "')"
+	                                 : "")));
 }
 
 //===--------------------------------------------------------------------===//
@@ -763,13 +781,24 @@ static void DuckSyncQueryFunction(ClientContext &context, TableFunctionInput &da
 //===--------------------------------------------------------------------===//
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register ducksync_init (use existing DuckLake catalog)
-	TableFunction init_func("ducksync_init", {LogicalType::VARCHAR}, DuckSyncInitFunction, DuckSyncInitBind);
-	loader.RegisterFunction(init_func);
+	// 1-arg: ducksync_init(catalog_name) - backward compatible, schema defaults to "ducksync"
+	TableFunction init_func_1("ducksync_init", {LogicalType::VARCHAR}, DuckSyncInitFunction, DuckSyncInitBind);
+	loader.RegisterFunction(init_func_1);
+	// 2-arg: ducksync_init(catalog_name, schema_name) - custom metadata schema (e.g. for GizmoSQL)
+	TableFunction init_func_2("ducksync_init", {LogicalType::VARCHAR, LogicalType::VARCHAR}, DuckSyncInitFunction,
+	                          DuckSyncInitBind);
+	loader.RegisterFunction(init_func_2);
 
 	// Register ducksync_setup_storage (full setup - attaches DuckLake)
-	TableFunction setup_storage_func("ducksync_setup_storage", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                 DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
-	loader.RegisterFunction(setup_storage_func);
+	// 2-arg: ducksync_setup_storage(pg_conn, data_path) - backward compatible, schema defaults to "ducksync"
+	TableFunction setup_storage_func_2("ducksync_setup_storage", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                   DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
+	loader.RegisterFunction(setup_storage_func_2);
+	// 3-arg: ducksync_setup_storage(pg_conn, data_path, schema_name) - custom metadata schema
+	TableFunction setup_storage_func_3("ducksync_setup_storage",
+	                                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                   DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
+	loader.RegisterFunction(setup_storage_func_3);
 
 	// Register ducksync_add_source
 	TableFunction add_source_func("ducksync_add_source",

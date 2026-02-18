@@ -20,6 +20,7 @@ fi
 echo ""
 echo ">> Starting PostgreSQL..."
 cd "$SCRIPT_DIR"
+docker compose down -v 2>/dev/null || true
 docker compose up -d postgres
 
 # Wait for PostgreSQL to be ready
@@ -39,6 +40,7 @@ done
 
 # Create temp directory for test data
 TEST_DATA_DIR="/tmp/ducksync_test_data"
+rm -rf "$TEST_DATA_DIR"
 mkdir -p "$TEST_DATA_DIR"
 
 # PostgreSQL connection string (libpq format for DuckLake)
@@ -130,3 +132,4 @@ echo "To test refresh, create a Snowflake secret and run:"
 echo "  SELECT * FROM ducksync_refresh('customer_cache');"
 echo ""
 echo "To stop PostgreSQL: make test-docker-down"
+

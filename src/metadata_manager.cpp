@@ -8,8 +8,8 @@ DuckSyncMetadataManager::DuckSyncMetadataManager(ClientContext &context) : conte
 }
 
 std::string DuckSyncMetadataManager::TableName(const std::string &table) const {
-	// Returns: ducklake_name.ducksync.table_name
-	return ducklake_name_ + ".ducksync." + table;
+	// Returns: ducklake_name.schema_name.table_name
+	return ducklake_name_ + "." + schema_name_ + "." + table;
 }
 
 void DuckSyncMetadataManager::ExecuteSQL(const std::string &sql) {
@@ -29,15 +29,16 @@ unique_ptr<MaterializedQueryResult> DuckSyncMetadataManager::QuerySQL(const std:
 	return unique_ptr<MaterializedQueryResult>(static_cast<MaterializedQueryResult *>(result.release()));
 }
 
-void DuckSyncMetadataManager::Initialize(const std::string &ducklake_name) {
+void DuckSyncMetadataManager::Initialize(const std::string &ducklake_name, const std::string &schema_name) {
 	if (initialized_) {
 		return;
 	}
 
 	ducklake_name_ = ducklake_name;
+	schema_name_ = schema_name;
 
-	// Create ducksync schema in the DuckLake catalog
-	ExecuteSQL("CREATE SCHEMA IF NOT EXISTS " + ducklake_name_ + ".ducksync;");
+	// Create metadata schema in the DuckLake catalog
+	ExecuteSQL("CREATE SCHEMA IF NOT EXISTS " + ducklake_name_ + "." + schema_name_ + ";");
 
 	// Create sources table (DuckLake: no PRIMARY KEY, no DEFAULT expressions)
 	std::ostringstream sources_sql;
