@@ -370,8 +370,7 @@ void DuckSyncMetadataManager::UpdateState(const CacheState &state) {
 	// Get current refresh_count before deleting
 	int64_t refresh_count = 0;
 	{
-		auto count_stmt =
-		    conn.Prepare("SELECT refresh_count FROM " + TableName("state") + " WHERE cache_name = $1");
+		auto count_stmt = conn.Prepare("SELECT refresh_count FROM " + TableName("state") + " WHERE cache_name = $1");
 		vector<Value> count_params = {Value(state.cache_name)};
 		auto count_result = count_stmt->Execute(count_params, false);
 		if (!count_result->HasError()) {

@@ -1,6 +1,7 @@
 # name: test/sql/test_ast_rewriting.test
 # description: Tests for AST-based query rewriting in ducksync_query
 # group: [sql]
+
 # NOTE: These tests require full infrastructure (PostgreSQL + Snowflake)
 # They are skipped in CI and run manually via make test-integration
 
