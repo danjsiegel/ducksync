@@ -1,0 +1,95 @@
+# name: test/sql/test_schema_param.test
+# description: Tests for configurable metadata schema parameter in ducksync_init and ducksync_setup_storage
+# group: [sql]
+
+# These tests verify the schema_name parameter behavior without requiring external services.
+# Full integration tests (actually creating schemas) require PostgreSQL + DuckLake.
+
+require ducksync
+
+# ============================================================================
+# Verify overloads are registered correctly
+# ============================================================================
+
+# ducksync_init should have exactly 2 overloads
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_init';
+----
+2
+
+# ducksync_setup_storage should have exactly 2 overloads
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_setup_storage';
+----
+2
+
+# The 1-arg ducksync_init overload exists (backward compat)
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name = 'ducksync_init' AND length(parameters) = 1;
+----
+1
+
+# The 2-arg ducksync_init overload exists (with schema_name)
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name = 'ducksync_init' AND length(parameters) = 2;
+----
+1
+
+# The 2-arg ducksync_setup_storage overload exists (backward compat)
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name = 'ducksync_setup_storage' AND length(parameters) = 2;
+----
+1
+
+# The 3-arg ducksync_setup_storage overload exists (with schema_name)
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name = 'ducksync_setup_storage' AND length(parameters) = 3;
+----
+1
+
+# ============================================================================
+# Error handling: wrong argument types for new overloads
+# ============================================================================
+
+# ducksync_init with integer catalog_name should fail
+statement error
+SELECT * FROM ducksync_init(12345);
+----
+No function matches
+
+# ducksync_init with integer schema_name should fail
+statement error
+SELECT * FROM ducksync_init('my_lake', 12345);
+----
+No function matches
+
+# ducksync_setup_storage with integer schema_name should fail
+statement error
+SELECT * FROM ducksync_setup_storage('conn', '/path', 12345);
+----
+No function matches
+
+# ============================================================================
+# Error handling: uninitialized state with 2-arg ducksync_init
+# ============================================================================
+
+# 2-arg ducksync_init with non-existent catalog should fail with catalog error
+# (not a schema_name error - the catalog check happens first)
+statement error
+SELECT * FROM ducksync_init('nonexistent_catalog', 'my_schema');
+----
+Catalog 'nonexistent_catalog' not found
+
+# ============================================================================
+# Verify no extra overloads were accidentally registered
+# ============================================================================
+
+# Total ducksync function count should be exactly 8
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
+----
+8

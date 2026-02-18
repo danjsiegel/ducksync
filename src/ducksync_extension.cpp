@@ -21,6 +21,7 @@
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
 
 // OpenSSL linked through vcpkg
 #include <openssl/opensslv.h>
@@ -29,6 +30,7 @@
 #include <algorithm>
 #include <cctype>
 #include <unordered_set>
+#include <iostream>
 
 namespace duckdb {
 
@@ -40,6 +42,7 @@ namespace duckdb {
 struct SetupStorageBindData : public TableFunctionData {
 	std::string pg_connection_string;
 	std::string data_path;
+	std::string schema_name = "ducksync"; // optional 3rd arg; defaults to "ducksync"
 	bool done = false;
 };
 
@@ -48,11 +51,17 @@ static unique_ptr<FunctionData> DuckSyncSetupStorageBind(ClientContext &context,
 	auto result = make_uniq<SetupStorageBindData>();
 
 	if (input.inputs.size() < 2) {
-		throw InvalidInputException("ducksync_setup_storage requires 2 arguments: pg_connection_string, data_path");
+		throw InvalidInputException(
+		    "ducksync_setup_storage requires at least 2 arguments: pg_connection_string, data_path[, schema_name]");
 	}
 
 	result->pg_connection_string = input.inputs[0].GetValue<string>();
 	result->data_path = input.inputs[1].GetValue<string>();
+
+	// Optional 3rd argument: schema_name (default "ducksync")
+	if (input.inputs.size() >= 3) {
+		result->schema_name = input.inputs[2].GetValue<string>();
+	}
 
 	// Don't do any work here - defer to the Function execution phase
 	names.emplace_back("status");
@@ -80,7 +89,7 @@ static void DuckSyncSetupStorageFunction(ClientContext &context, TableFunctionIn
 	if (!state.metadata_manager) {
 		state.metadata_manager = make_uniq<DuckSyncMetadataManager>(context);
 	}
-	state.metadata_manager->Initialize(state.storage_manager->GetDuckLakeName());
+	state.metadata_manager->Initialize(state.storage_manager->GetDuckLakeName(), bind_data.schema_name);
 
 	state.initialized = true;
 	bind_data.done = true;
@@ -90,11 +99,13 @@ static void DuckSyncSetupStorageFunction(ClientContext &context, TableFunctionIn
 }
 
 //===--------------------------------------------------------------------===//
-// ducksync_init(catalog_name)
+// ducksync_init(catalog_name[, schema_name])
 // - Use an existing DuckLake catalog for DuckSync storage
+// - schema_name defaults to "ducksync" for backward compatibility
 //===--------------------------------------------------------------------===//
 struct InitBindData : public TableFunctionData {
 	std::string catalog_name;
+	std::string schema_name = "ducksync"; // optional 2nd arg; defaults to "ducksync"
 	bool done = false;
 };
 
@@ -103,10 +114,15 @@ static unique_ptr<FunctionData> DuckSyncInitBind(ClientContext &context, TableFu
 	auto result = make_uniq<InitBindData>();
 
 	if (input.inputs.empty()) {
-		throw InvalidInputException("ducksync_init requires 1 argument: catalog_name (your existing DuckLake catalog)");
+		throw InvalidInputException("ducksync_init requires at least 1 argument: catalog_name[, schema_name]");
 	}
 
 	result->catalog_name = input.inputs[0].GetValue<string>();
+
+	// Optional 2nd argument: schema_name (default "ducksync")
+	if (input.inputs.size() >= 2) {
+		result->schema_name = input.inputs[1].GetValue<string>();
+	}
 
 	names.emplace_back("status");
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -129,17 +145,19 @@ static void DuckSyncInitFunction(ClientContext &context, TableFunctionInput &dat
 	}
 	state.storage_manager->UseExistingCatalog(bind_data.catalog_name);
 
-	// Initialize metadata manager (creates ducksync schema and tables)
+	// Initialize metadata manager (creates metadata schema and tables)
 	if (!state.metadata_manager) {
 		state.metadata_manager = make_uniq<DuckSyncMetadataManager>(context);
 	}
-	state.metadata_manager->Initialize(bind_data.catalog_name);
+	state.metadata_manager->Initialize(bind_data.catalog_name, bind_data.schema_name);
 
 	state.initialized = true;
 	bind_data.done = true;
 
 	output.SetCardinality(1);
-	output.SetValue(0, 0, Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'"));
+	output.SetValue(0, 0,
+	                Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'" +
+	                      (bind_data.schema_name != "ducksync" ? " (schema: '" + bind_data.schema_name + "')" : "")));
 }
 
 //===--------------------------------------------------------------------===//
@@ -422,8 +440,16 @@ static void ExtractTablesFromQueryNode(QueryNode &node, std::unordered_set<std::
 		if (select.from_table) {
 			ExtractTablesFromTableRef(*select.from_table, tables);
 		}
+	} else if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+		// Handle UNION, INTERSECT, EXCEPT recursively
+		auto &setop = node.Cast<SetOperationNode>();
+		if (setop.left) {
+			ExtractTablesFromQueryNode(*setop.left, tables);
+		}
+		if (setop.right) {
+			ExtractTablesFromQueryNode(*setop.right, tables);
+		}
 	}
-	// Handle SetOperationNode (UNION, INTERSECT, EXCEPT) recursively
 }
 
 static void ExtractTablesFromTableRef(TableRef &ref, std::unordered_set<std::string> &tables) {
@@ -455,6 +481,15 @@ static void RewriteTablesInQueryNode(QueryNode &node, const std::unordered_map<s
 		auto &select = node.Cast<SelectNode>();
 		if (select.from_table) {
 			RewriteTablesInTableRef(*select.from_table, rewrites);
+		}
+	} else if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+		// Handle UNION, INTERSECT, EXCEPT recursively
+		auto &setop = node.Cast<SetOperationNode>();
+		if (setop.left) {
+			RewriteTablesInQueryNode(*setop.left, rewrites);
+		}
+		if (setop.right) {
+			RewriteTablesInQueryNode(*setop.right, rewrites);
 		}
 	}
 }
@@ -505,8 +540,12 @@ static std::vector<std::string> ExtractTableReferences(const std::string &sql) {
 				ExtractTablesFromQueryNode(*select.node, tables);
 			}
 		}
+	} catch (const std::exception &e) {
+		// Parse failed - query will passthrough to Snowflake
+		std::cerr << "[DuckSync] Warning: Failed to parse SQL for table extraction: " << e.what() << std::endl;
 	} catch (...) {
-		// If parsing fails, return empty - will passthrough to Snowflake
+		// Unknown parse error - query will passthrough to Snowflake
+		std::cerr << "[DuckSync] Warning: Unknown error parsing SQL for table extraction" << std::endl;
 	}
 
 	return std::vector<std::string>(tables.begin(), tables.end());
@@ -530,8 +569,12 @@ static std::string RewriteQueryWithAST(const std::string &sql,
 		if (!parser.statements.empty()) {
 			return parser.statements[0]->ToString();
 		}
+	} catch (const std::exception &e) {
+		// Rewrite failed - use original SQL (will passthrough to Snowflake)
+		std::cerr << "[DuckSync] Warning: Failed to rewrite SQL: " << e.what() << std::endl;
 	} catch (...) {
-		// If anything fails, return original
+		// Unknown rewrite error - use original SQL
+		std::cerr << "[DuckSync] Warning: Unknown error rewriting SQL" << std::endl;
 	}
 	return sql;
 }
@@ -543,6 +586,7 @@ static std::string RewriteQueryWithAST(const std::string &sql,
 //===--------------------------------------------------------------------===//
 struct DuckSyncQueryGlobalState : public GlobalTableFunctionState {
 	unique_ptr<QueryResult> result;
+	unique_ptr<DataChunk> current_chunk; // Keep chunk alive while output references it
 	idx_t current_row = 0;
 	bool finished = false;
 };
@@ -609,14 +653,14 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 				// Never refreshed
 				needs_refresh = true;
 			} else if (cache.has_ttl && cache_state.HasExpiresAt()) {
-				// Check if TTL expired
+				// Check if TTL expired by comparing timestamps
+				// Get current timestamp from DuckDB and compare with expires_at
 				auto conn = Connection(*context.db);
-				std::ostringstream sql;
-				sql << "SELECT CASE WHEN TIMESTAMP '" << cache_state.expires_at
-				    << "' < CURRENT_TIMESTAMP THEN TRUE ELSE FALSE END;";
-				auto ttl_result = conn.Query(sql.str());
-				if (!ttl_result->HasError() && ttl_result->RowCount() > 0) {
-					needs_refresh = ttl_result->GetValue(0, 0).GetValue<bool>();
+				auto now_result = conn.Query("SELECT CURRENT_TIMESTAMP::VARCHAR;");
+				if (!now_result->HasError() && now_result->RowCount() > 0) {
+					auto now_str = now_result->GetValue(0, 0).ToString();
+					// Simple string comparison works for ISO-format timestamps
+					needs_refresh = (cache_state.expires_at < now_str);
 				}
 			}
 
@@ -666,20 +710,24 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 		    "SELECT * FROM snowflake_query('" + escaped_query + "', '" + source.secret_name + "')";
 	}
 
-	// Execute query to get schema
+	// Use Prepare() to discover schema without executing the query
+	// This avoids double-execution (bind + init_global) which would
+	// hit Snowflake twice for passthrough queries
 	auto conn = Connection(*context.db);
-	auto schema_result = conn.Query(result->execution_query);
+	auto prepared = conn.Prepare(result->execution_query);
 
-	if (schema_result->HasError()) {
-		throw IOException("Query failed: " + schema_result->GetError());
+	if (prepared->HasError()) {
+		throw IOException("Query failed: " + prepared->GetError());
 	}
 
-	// Copy schema
-	for (idx_t i = 0; i < schema_result->types.size(); i++) {
-		return_types.push_back(schema_result->types[i]);
-		names.push_back(schema_result->names[i]);
-		result->result_types.push_back(schema_result->types[i]);
-		result->result_names.push_back(schema_result->names[i]);
+	// Get schema from prepared statement
+	auto &prep_types = prepared->GetTypes();
+	auto &prep_names = prepared->GetNames();
+	for (idx_t i = 0; i < prep_types.size(); i++) {
+		return_types.push_back(prep_types[i]);
+		names.push_back(prep_names[i]);
+		result->result_types.push_back(prep_types[i]);
+		result->result_names.push_back(prep_names[i]);
 	}
 
 	return std::move(result);
@@ -711,18 +759,18 @@ static void DuckSyncQueryFunction(ClientContext &context, TableFunctionInput &da
 
 	auto &result = *gstate.result;
 
-	// Get next chunk from result
-	auto chunk = result.Fetch();
-	if (!chunk || chunk->size() == 0) {
+	// Get next chunk from result - store in gstate to keep alive while output references it
+	gstate.current_chunk = result.Fetch();
+	if (!gstate.current_chunk || gstate.current_chunk->size() == 0) {
 		gstate.finished = true;
 		output.SetCardinality(0);
 		return;
 	}
 
-	// Copy data to output
-	output.SetCardinality(chunk->size());
-	for (idx_t col = 0; col < chunk->ColumnCount(); col++) {
-		output.data[col].Reference(chunk->data[col]);
+	// Reference data from the chunk stored in gstate (stays alive until next call)
+	output.SetCardinality(gstate.current_chunk->size());
+	for (idx_t col = 0; col < gstate.current_chunk->ColumnCount(); col++) {
+		output.data[col].Reference(gstate.current_chunk->data[col]);
 	}
 }
 
@@ -731,13 +779,24 @@ static void DuckSyncQueryFunction(ClientContext &context, TableFunctionInput &da
 //===--------------------------------------------------------------------===//
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register ducksync_init (use existing DuckLake catalog)
-	TableFunction init_func("ducksync_init", {LogicalType::VARCHAR}, DuckSyncInitFunction, DuckSyncInitBind);
-	loader.RegisterFunction(init_func);
+	// 1-arg: ducksync_init(catalog_name) - backward compatible, schema defaults to "ducksync"
+	TableFunction init_func_1("ducksync_init", {LogicalType::VARCHAR}, DuckSyncInitFunction, DuckSyncInitBind);
+	loader.RegisterFunction(init_func_1);
+	// 2-arg: ducksync_init(catalog_name, schema_name) - custom metadata schema (e.g. for GizmoSQL)
+	TableFunction init_func_2("ducksync_init", {LogicalType::VARCHAR, LogicalType::VARCHAR}, DuckSyncInitFunction,
+	                          DuckSyncInitBind);
+	loader.RegisterFunction(init_func_2);
 
 	// Register ducksync_setup_storage (full setup - attaches DuckLake)
-	TableFunction setup_storage_func("ducksync_setup_storage", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                 DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
-	loader.RegisterFunction(setup_storage_func);
+	// 2-arg: ducksync_setup_storage(pg_conn, data_path) - backward compatible, schema defaults to "ducksync"
+	TableFunction setup_storage_func_2("ducksync_setup_storage", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                   DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
+	loader.RegisterFunction(setup_storage_func_2);
+	// 3-arg: ducksync_setup_storage(pg_conn, data_path, schema_name) - custom metadata schema
+	TableFunction setup_storage_func_3("ducksync_setup_storage",
+	                                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                   DuckSyncSetupStorageFunction, DuckSyncSetupStorageBind);
+	loader.RegisterFunction(setup_storage_func_3);
 
 	// Register ducksync_add_source
 	TableFunction add_source_func("ducksync_add_source",
