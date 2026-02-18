@@ -10,22 +10,30 @@ require ducksync
 statement ok
 SELECT 1;
 
-# Test functions are registered
+# Test total function count
+# ducksync_init: 2 overloads (1-arg, 2-arg)
+# ducksync_setup_storage: 2 overloads (2-arg, 3-arg)
+# ducksync_add_source: 1
+# ducksync_create_cache: 1
+# ducksync_refresh: 1
+# ducksync_query: 1
+# Total: 8
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
 ----
-6
+8
 
-# Test function signatures exist
+# ducksync_init has 2 overloads: (catalog_name) and (catalog_name, schema_name)
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_init';
 ----
-1
+2
 
+# ducksync_setup_storage has 2 overloads: (pg_conn, data_path) and (pg_conn, data_path, schema_name)
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_setup_storage';
 ----
-1
+2
 
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_add_source';
@@ -46,6 +54,30 @@ query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_query';
 ----
 1
+
+# Verify ducksync_init overload parameter counts (includes named params)
+# 1-arg overload: [col0]
+# 2-arg overload: [col0, col1]
+query II
+SELECT function_name, length(parameters) as param_count
+FROM duckdb_functions()
+WHERE function_name = 'ducksync_init'
+ORDER BY param_count;
+----
+ducksync_init	1
+ducksync_init	2
+
+# Verify ducksync_setup_storage overload parameter counts
+# 2-arg overload: [col0, col1]
+# 3-arg overload: [col0, col1, col2]
+query II
+SELECT function_name, length(parameters) as param_count
+FROM duckdb_functions()
+WHERE function_name = 'ducksync_setup_storage'
+ORDER BY param_count;
+----
+ducksync_setup_storage	2
+ducksync_setup_storage	3
 
 # Test error handling - wrong number of arguments
 statement error
@@ -101,5 +133,15 @@ No function matches
 # Test functions require initialization
 statement error
 SELECT * FROM ducksync_query('SELECT * FROM test', 'my_source');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_add_source('src', 'snowflake', 'my_secret');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_refresh('my_cache');
 ----
 DuckSync not initialized

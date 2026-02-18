@@ -7,7 +7,7 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-.PHONY: test integration-test test-docker-up test-docker-down clean-test-data clean-all
+.PHONY: test integration-test test-docker-up test-docker-down clean-test-data clean-all update-version test-compat
 
 test: release test-docker-up
 	@chmod +x $(PROJ_DIR)test/run_tests.sh
@@ -43,11 +43,11 @@ clean-all: test-docker-down clean-test-data
 reset-test: test-docker-down clean-test-data test-docker-up
 	@echo "Test environment reset complete"
 
-# Update DuckDB version - run: make update-version VERSION=v1.4.5
-.PHONY: update-version
+# Update DuckDB version - run: make update-version VERSION=v1.5.0
+# Automatically updates submodules, CI workflow, and README.
 update-version:
 ifndef VERSION
-	$(error VERSION is required. Usage: make update-version VERSION=v1.4.5)
+	$(error VERSION is required. Usage: make update-version VERSION=v1.5.0)
 endif
 	@echo "Updating DuckDB to $(VERSION)..."
 	@echo ""
@@ -55,19 +55,37 @@ endif
 	cd $(PROJ_DIR)duckdb && git fetch --tags && git checkout $(VERSION)
 	cd $(PROJ_DIR)extension-ci-tools && git fetch --tags && git checkout $(VERSION) || echo "Note: ci-tools may use different tag"
 	@echo ""
-	@echo "Step 2: Update these files manually:"
-	@echo "  - .github/workflows/MainDistributionPipeline.yml"
-	@echo "    Change duckdb_version and ci_tools_version to $(VERSION)"
-	@echo "  - README.md"
-	@echo "    Update version references"
+	@echo "Step 2: Updating CI workflow..."
+	@sed -i '' 's/@v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/@$(VERSION)/g' $(PROJ_DIR).github/workflows/MainDistributionPipeline.yml
+	@sed -i '' 's/duckdb_version: v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/duckdb_version: $(VERSION)/g' $(PROJ_DIR).github/workflows/MainDistributionPipeline.yml
+	@sed -i '' 's/ci_tools_version: v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/ci_tools_version: $(VERSION)/g' $(PROJ_DIR).github/workflows/MainDistributionPipeline.yml
+	@echo "Step 3: Updating README..."
+	@sed -i '' 's/DuckDB v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/DuckDB $(VERSION)/g' $(PROJ_DIR)README.md
 	@echo ""
-	@echo "Step 3: Test the build:"
+	@echo "Done! Next steps:"
 	@echo "  make clean-all && make release && make test"
-	@echo ""
-	@echo "Step 4: Create PR:"
 	@echo "  git checkout -b update-duckdb-$(VERSION)"
-	@echo "  git add -A"
-	@echo "  git commit -m 'chore: update DuckDB to $(VERSION)'"
+	@echo "  git add -A && git commit -m 'chore: update DuckDB to $(VERSION)'"
 	@echo "  git push -u origin update-duckdb-$(VERSION)"
+
+# Test compatibility against a specific DuckDB branch or tag without requiring Snowflake.
+# Usage: make test-compat BRANCH=origin/v1.5-variegata
+#        make test-compat BRANCH=v1.5.0
+test-compat:
+ifndef BRANCH
+	$(error BRANCH is required. Usage: make test-compat BRANCH=origin/v1.5-variegata)
+endif
+	@echo "Testing compatibility with DuckDB branch: $(BRANCH)"
+	@echo "Step 1: Checking out DuckDB submodule to $(BRANCH)..."
+	@cd $(PROJ_DIR)duckdb && git fetch && git checkout $(BRANCH)
+	@echo "Step 2: Cleaning build artifacts..."
+	@$(MAKE) clean-all
+	@echo "Step 3: Building extension..."
+	@$(MAKE) release
 	@echo ""
-	@echo "Done! Submodules updated to $(VERSION)"
+	@echo "Build succeeded for $(BRANCH)."
+	@echo "To run unit tests (no Snowflake required):"
+	@echo "  $(PROJ_DIR)test/run_tests.sh --unit-only"
+	@echo ""
+	@echo "NOTE: Restore submodule to stable version when done:"
+	@echo "  cd duckdb && git checkout v1.4.4"

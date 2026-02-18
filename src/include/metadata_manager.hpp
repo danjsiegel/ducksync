@@ -47,8 +47,8 @@ class DuckSyncMetadataManager {
 public:
 	explicit DuckSyncMetadataManager(ClientContext &context);
 
-	// Initialize schema in the DuckLake catalog
-	void Initialize(const std::string &ducklake_name);
+	// Initialize schema in the DuckLake catalog schema_name defaults to "ducksync" for backward compatibility.
+	void Initialize(const std::string &ducklake_name, const std::string &schema_name = "ducksync");
 
 	// Source CRUD
 	void CreateSource(const SourceDefinition &source);
@@ -76,6 +76,7 @@ public:
 private:
 	ClientContext &context_;
 	std::string ducklake_name_; // e.g., "my_lake" - the attached DuckLake
+	std::string schema_name_;   // e.g., "ducksync" (default) - metadata schema within the catalog
 	bool initialized_;
 
 	void ExecuteSQL(const std::string &sql);
