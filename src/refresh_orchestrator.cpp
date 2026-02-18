@@ -228,7 +228,7 @@ std::string RefreshOrchestrator::GenerateStateHash(const std::unordered_map<std:
 int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const SourceDefinition &source) {
 	auto conn = MakeConnection(context_);
 
-	// Escape single quotes in source query
+	// Escape single quotes in source query for snowflake_query()
 	std::string escaped_query;
 	for (char c : cache.source_query) {
 		if (c == '\'') {
@@ -238,19 +238,6 @@ int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const 
 		}
 	}
 
-	// Execute query via Snowflake extension
-	// Signature: snowflake_query(query_string, secret_name)
-	std::ostringstream query;
-	query << "SELECT * FROM snowflake_query('" << escaped_query << "', '" << source.secret_name << "');";
-
-	auto result = conn.Query(query.str());
-	if (result->HasError()) {
-		throw IOException("Failed to execute source query: " + result->GetError());
-	}
-
-	int64_t row_count = result->RowCount();
-
-	// Create or replace cache table in DuckLake
 	if (!storage_manager_.IsAttached()) {
 		throw IOException("DuckLake storage not attached");
 	}
@@ -266,8 +253,7 @@ int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const 
 		throw IOException("Failed to create schema: " + schema_result->GetError());
 	}
 
-	// Create table from query
-	// Signature: snowflake_query(query_string, secret_name)
+	// Single Snowflake query: CREATE TABLE AS SELECT (no double fetch)
 	std::ostringstream create_table;
 	create_table << "CREATE OR REPLACE TABLE " << table_name << " AS "
 	             << "SELECT * FROM snowflake_query('" << escaped_query << "', '" << source.secret_name << "');";
@@ -277,7 +263,15 @@ int64_t RefreshOrchestrator::ExecuteRefresh(const CacheDefinition &cache, const 
 		throw IOException("Failed to create cache table: " + create_result->GetError());
 	}
 
-	return row_count;
+	// Count rows from the local cache table (no Snowflake round-trip)
+	std::ostringstream count_sql;
+	count_sql << "SELECT COUNT(*) FROM " << table_name << ";";
+	auto count_result = conn.Query(count_sql.str());
+	if (!count_result->HasError() && count_result->RowCount() > 0) {
+		return count_result->GetValue(0, 0).GetValue<int64_t>();
+	}
+
+	return 0;
 }
 
 void RefreshOrchestrator::UpdateCacheState(const std::string &cache_name, const std::string &state_hash,
