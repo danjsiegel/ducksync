@@ -114,8 +114,7 @@ static unique_ptr<FunctionData> DuckSyncInitBind(ClientContext &context, TableFu
 	auto result = make_uniq<InitBindData>();
 
 	if (input.inputs.empty()) {
-		throw InvalidInputException(
-		    "ducksync_init requires at least 1 argument: catalog_name[, schema_name]");
+		throw InvalidInputException("ducksync_init requires at least 1 argument: catalog_name[, schema_name]");
 	}
 
 	result->catalog_name = input.inputs[0].GetValue<string>();
@@ -156,10 +155,9 @@ static void DuckSyncInitFunction(ClientContext &context, TableFunctionInput &dat
 	bind_data.done = true;
 
 	output.SetCardinality(1);
-	output.SetValue(0, 0, Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'" +
-	                            (bind_data.schema_name != "ducksync"
-	                                 ? " (schema: '" + bind_data.schema_name + "')"
-	                                 : "")));
+	output.SetValue(0, 0,
+	                Value("DuckSync initialized with catalog '" + bind_data.catalog_name + "'" +
+	                      (bind_data.schema_name != "ducksync" ? " (schema: '" + bind_data.schema_name + "')" : "")));
 }
 
 //===--------------------------------------------------------------------===//
