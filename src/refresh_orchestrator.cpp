@@ -136,7 +136,6 @@ bool RefreshOrchestrator::IsTTLExpired(const CacheState &state, const CacheDefin
 std::unordered_map<std::string, std::string>
 RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
                                             const std::vector<std::string> &monitor_tables) {
-
 	std::unordered_map<std::string, std::string> metadata;
 	auto conn = MakeConnection(context_);
 
@@ -195,7 +194,6 @@ RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
 }
 
 std::string RefreshOrchestrator::GenerateStateHash(const std::unordered_map<std::string, std::string> &metadata) {
-
 	// Build a sorted JSON-like string for consistent hashing
 	std::vector<std::pair<std::string, std::string>> sorted_metadata(metadata.begin(), metadata.end());
 	std::sort(sorted_metadata.begin(), sorted_metadata.end());
