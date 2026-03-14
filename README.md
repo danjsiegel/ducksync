@@ -273,7 +273,7 @@ This approach means:
 ### Prerequisites
 
 - Docker (for PostgreSQL)
-- DuckDB v1.4.4+
+- DuckDB v1.5.0+
 - ADBC Snowflake driver (for Snowflake integration tests)
 
 ### Run Tests
@@ -313,7 +313,7 @@ make release
 
 ## Dependencies
 
-- **DuckDB v1.4.2+**
+- **DuckDB v1.5.0+**
 - **DuckLake extension** - auto-installed ([docs](https://ducklake.select/docs/))
 - **Snowflake extension** - auto-installed ([docs](https://duckdb.org/community_extensions/extensions/snowflake))
 
