@@ -443,11 +443,10 @@ static void ExtractTablesFromQueryNode(QueryNode &node, std::unordered_set<std::
 	} else if (node.type == QueryNodeType::SET_OPERATION_NODE) {
 		// Handle UNION, INTERSECT, EXCEPT recursively
 		auto &setop = node.Cast<SetOperationNode>();
-		if (setop.left) {
-			ExtractTablesFromQueryNode(*setop.left, tables);
-		}
-		if (setop.right) {
-			ExtractTablesFromQueryNode(*setop.right, tables);
+		for (auto &child : setop.children) {
+			if (child) {
+				ExtractTablesFromQueryNode(*child, tables);
+			}
 		}
 	}
 }
@@ -485,11 +484,10 @@ static void RewriteTablesInQueryNode(QueryNode &node, const std::unordered_map<s
 	} else if (node.type == QueryNodeType::SET_OPERATION_NODE) {
 		// Handle UNION, INTERSECT, EXCEPT recursively
 		auto &setop = node.Cast<SetOperationNode>();
-		if (setop.left) {
-			RewriteTablesInQueryNode(*setop.left, rewrites);
-		}
-		if (setop.right) {
-			RewriteTablesInQueryNode(*setop.right, rewrites);
+		for (auto &child : setop.children) {
+			if (child) {
+				RewriteTablesInQueryNode(*child, rewrites);
+			}
 		}
 	}
 }
