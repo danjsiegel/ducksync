@@ -1,6 +1,9 @@
 # DuckSync
 
-DuckSync is a DuckDB extension that provides intelligent query result caching between DuckDB and Snowflake. It uses DuckLake for storage (PostgreSQL catalog + Parquet files) and features transparent query routing, TTL-based expiration, and smart refresh based on source table metadata.
+### 📉 [How to Reduce Snowflake Compute Costs with Smart DuckDB Caching](https://danjsiegel.substack.com/p/how-to-reduce-snowflake-compute-costs)
+*A technical breakdown of intelligent query result caching and architectural cost optimization.*
+
+**DuckSync** is a DuckDB extension that provides intelligent query result caching between DuckDB and Snowflake. It uses **DuckLake** for storage (PostgreSQL catalog + Parquet files) and features transparent query routing, TTL-based expiration, and smart refresh based on source table metadata.
 
 ## Features
 
@@ -270,7 +273,7 @@ This approach means:
 ### Prerequisites
 
 - Docker (for PostgreSQL)
-- DuckDB v1.4.4+
+- DuckDB v1.5.0+
 - ADBC Snowflake driver (for Snowflake integration tests)
 
 ### Run Tests
@@ -310,7 +313,7 @@ make release
 
 ## Dependencies
 
-- **DuckDB v1.4.2+**
+- **DuckDB v1.5.0+**
 - **DuckLake extension** - auto-installed ([docs](https://ducklake.select/docs/))
 - **Snowflake extension** - auto-installed ([docs](https://duckdb.org/community_extensions/extensions/snowflake))
 
