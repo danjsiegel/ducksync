@@ -17,11 +17,13 @@ SELECT 1;
 # ducksync_create_cache: 1
 # ducksync_refresh: 1
 # ducksync_query: 1
-# Total: 8
+# ducksync_serve: 1
+# ducksync_stop: 1
+# Total: 10
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
 ----
-8
+10
 
 # ducksync_init has 2 overloads: (catalog_name) and (catalog_name, schema_name)
 query I
@@ -52,6 +54,16 @@ SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_refresh'
 
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_query';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_serve';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_stop';
 ----
 1
 
@@ -130,6 +142,16 @@ SELECT * FROM ducksync_query('only_one');
 ----
 No function matches
 
+statement error
+SELECT * FROM ducksync_serve();
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_stop();
+----
+No function matches
+
 # Test functions require initialization
 statement error
 SELECT * FROM ducksync_query('SELECT * FROM test', 'my_source');
@@ -143,5 +165,15 @@ DuckSync not initialized
 
 statement error
 SELECT * FROM ducksync_refresh('my_cache');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_serve('quack:localhost');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_stop('quack:localhost');
 ----
 DuckSync not initialized

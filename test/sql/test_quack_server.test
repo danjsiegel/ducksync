@@ -1,0 +1,54 @@
+# name: test/sql/test_quack_server.test
+# description: Quack server lifecycle tests for DuckSync
+# group: [sql]
+
+require ducksync
+
+statement ok
+INSTALL ducklake;
+
+statement ok
+LOAD ducklake;
+
+statement ok
+INSTALL quack;
+
+statement ok
+LOAD quack;
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/ducksync_quack_server.ducklake' AS ducksync_quack_lake
+    (DATA_PATH '{TEST_DIR}/ducksync_quack_server_data');
+
+query I
+SELECT COUNT(*) FROM quack_server_list();
+----
+0
+
+statement ok
+SELECT * FROM ducksync_init('ducksync_quack_lake');
+
+query I
+SELECT COUNT(*) FROM quack_server_list();
+----
+0
+
+query I
+SELECT COUNT(*) FROM ducksync_serve('quack:localhost', token := 'ducksync_phase1_test_token');
+----
+1
+
+query I
+SELECT COUNT(*) FROM quack_server_list();
+----
+1
+
+query I
+SELECT COUNT(*) FROM ducksync_stop('quack:localhost');
+----
+1
+
+query I
+SELECT COUNT(*) FROM quack_server_list();
+----
+0
