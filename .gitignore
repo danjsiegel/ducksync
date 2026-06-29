@@ -28,3 +28,5 @@ venv/
 # Docker volumes
 postgres_data/
 minio_data/
+
+plans/
