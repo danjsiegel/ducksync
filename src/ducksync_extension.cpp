@@ -239,6 +239,8 @@ struct CreateCacheBindData : public TableFunctionData {
 	std::vector<std::string> monitor_tables;
 	int64_t ttl_seconds;
 	bool has_ttl;
+	std::string invalidation_mode = "last_altered";
+	std::string metadata_secret_name;
 	bool done = false;
 
 	CreateCacheBindData() : ttl_seconds(-1), has_ttl(false) {
@@ -253,7 +255,9 @@ static unique_ptr<FunctionData> DuckSyncCreateCacheBind(ClientContext &context, 
 		throw InvalidInputException("ducksync_create_cache requires at least 4 arguments: cache_name, source_name, "
 		                            "source_query, monitor_tables");
 	}
-
+	if (input.inputs.size() > 5) {
+		throw InvalidInputException("ducksync_create_cache accepts at most 5 positional arguments");
+	}
 	result->cache_name = input.inputs[0].GetValue<string>();
 	result->source_name = input.inputs[1].GetValue<string>();
 	result->source_query = input.inputs[2].GetValue<string>();
@@ -268,6 +272,22 @@ static unique_ptr<FunctionData> DuckSyncCreateCacheBind(ClientContext &context, 
 	if (input.inputs.size() > 4 && !input.inputs[4].IsNull()) {
 		result->ttl_seconds = input.inputs[4].GetValue<int64_t>();
 		result->has_ttl = true;
+	}
+
+	for (auto &kv : input.named_parameters) {
+		if (kv.first == "invalidation_mode") {
+			result->invalidation_mode = kv.second.GetValue<string>();
+		} else if (kv.first == "metadata_secret") {
+			result->metadata_secret_name = kv.second.GetValue<string>();
+		}
+	}
+
+	if (result->invalidation_mode != "last_altered" && result->invalidation_mode != "two_stage" &&
+	    result->invalidation_mode != "ttl_only" && result->invalidation_mode != "manual") {
+		throw InvalidInputException("invalidation_mode must be one of: last_altered, two_stage, ttl_only, manual");
+	}
+	if (result->invalidation_mode == "two_stage" && result->metadata_secret_name.empty()) {
+		throw InvalidInputException("ducksync_create_cache with invalidation_mode='two_stage' requires metadata_secret");
 	}
 
 	names.emplace_back("status");
@@ -302,6 +322,8 @@ static void DuckSyncCreateCacheFunction(ClientContext &context, TableFunctionInp
 	cache.monitor_tables = bind_data.monitor_tables;
 	cache.ttl_seconds = bind_data.ttl_seconds;
 	cache.has_ttl = bind_data.has_ttl;
+	cache.invalidation_mode = bind_data.invalidation_mode;
+	cache.metadata_secret_name = bind_data.metadata_secret_name;
 
 	state.metadata_manager->CreateCache(cache);
 	state.metadata_manager->InitializeState(bind_data.cache_name);
@@ -960,8 +982,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register ducksync_create_cache
 	TableFunction create_cache_func("ducksync_create_cache",
 	                                {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                                 LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BIGINT},
+	                                 LogicalType::LIST(LogicalType::VARCHAR)},
 	                                DuckSyncCreateCacheFunction, DuckSyncCreateCacheBind);
+	create_cache_func.varargs = LogicalType::BIGINT;
+	create_cache_func.named_parameters["invalidation_mode"] = LogicalType::VARCHAR;
+	create_cache_func.named_parameters["metadata_secret"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(create_cache_func);
 
 	// Register ducksync_refresh

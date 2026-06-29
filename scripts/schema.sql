@@ -39,11 +39,14 @@ CREATE TABLE IF NOT EXISTS ducksync.caches (
     source_query TEXT NOT NULL,
     monitor_tables TEXT[] NOT NULL,  -- Array of fully-qualified table names to monitor
     ttl_seconds INTEGER,  -- NULL = no expiration (reference data)
+    invalidation_mode VARCHAR(50) NOT NULL DEFAULT 'last_altered',
+    metadata_secret_name VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     
     -- Constraints
     CONSTRAINT chk_ttl_positive CHECK (ttl_seconds IS NULL OR ttl_seconds > 0),
-    CONSTRAINT chk_monitor_tables_not_empty CHECK (array_length(monitor_tables, 1) > 0)
+    CONSTRAINT chk_monitor_tables_not_empty CHECK (array_length(monitor_tables, 1) > 0),
+    CONSTRAINT chk_invalidation_mode CHECK (invalidation_mode IN ('last_altered', 'two_stage', 'ttl_only', 'manual'))
 );
 
 -- Index for source lookups
@@ -55,6 +58,14 @@ COMMENT ON COLUMN ducksync.caches.source_name IS 'Source to execute query agains
 COMMENT ON COLUMN ducksync.caches.source_query IS 'SQL query to cache results from';
 COMMENT ON COLUMN ducksync.caches.monitor_tables IS 'Tables to monitor for changes (last_altered)';
 COMMENT ON COLUMN ducksync.caches.ttl_seconds IS 'Cache TTL in seconds (NULL = no expiration)';
+COMMENT ON COLUMN ducksync.caches.invalidation_mode IS 'Refresh invalidation mode';
+COMMENT ON COLUMN ducksync.caches.metadata_secret_name IS 'Optional Snowflake secret for warehouse-free Stage 1 metadata checks';
+
+ALTER TABLE ducksync.caches
+ADD COLUMN IF NOT EXISTS invalidation_mode VARCHAR(50) NOT NULL DEFAULT 'last_altered';
+
+ALTER TABLE ducksync.caches
+ADD COLUMN IF NOT EXISTS metadata_secret_name VARCHAR(255);
 
 --============================================================================
 -- ducksync.state: Runtime cache state tracking
@@ -80,6 +91,24 @@ COMMENT ON COLUMN ducksync.state.expires_at IS 'When cache expires (calculated f
 COMMENT ON COLUMN ducksync.state.refresh_count IS 'Total number of refreshes performed';
 COMMENT ON COLUMN ducksync.state.last_row_count IS 'Number of rows from last refresh';
 COMMENT ON COLUMN ducksync.state.last_duration_ms IS 'Duration of last refresh in milliseconds';
+
+--============================================================================
+-- ducksync.table_snapshots: Persisted Stage 1 rows/bytes snapshots
+--============================================================================
+CREATE TABLE IF NOT EXISTS ducksync.table_snapshots (
+    cache_name VARCHAR(255) NOT NULL REFERENCES ducksync.caches(cache_name) ON DELETE CASCADE,
+    source_table VARCHAR(255) NOT NULL,
+    source_rows BIGINT NOT NULL,
+    source_bytes BIGINT NOT NULL,
+    snapshot_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (cache_name, source_table)
+);
+
+COMMENT ON TABLE ducksync.table_snapshots IS 'Persisted Stage 1 Snowflake SHOW TABLES rows/bytes snapshots';
+COMMENT ON COLUMN ducksync.table_snapshots.cache_name IS 'Reference to cache definition';
+COMMENT ON COLUMN ducksync.table_snapshots.source_table IS 'Fully-qualified source table name';
+COMMENT ON COLUMN ducksync.table_snapshots.source_rows IS 'Last observed SHOW TABLES rows value';
+COMMENT ON COLUMN ducksync.table_snapshots.source_bytes IS 'Last observed SHOW TABLES bytes value';
 
 --============================================================================
 -- Helper Views
@@ -193,4 +222,3 @@ COMMENT ON FUNCTION ducksync.update_refresh_state(VARCHAR, TEXT, BIGINT, DOUBLE 
 -- GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ducksync TO ducksync_user;
 -- ALTER DEFAULT PRIVILEGES IN SCHEMA ducksync GRANT ALL ON TABLES TO ducksync_user;
 -- ALTER DEFAULT PRIVILEGES IN SCHEMA ducksync GRANT ALL ON SEQUENCES TO ducksync_user;
-

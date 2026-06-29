@@ -128,6 +128,28 @@ SELECT * FROM ducksync_create_cache('one', 'two');
 No function matches
 
 statement error
+SELECT * FROM ducksync_create_cache(
+    'cache1',
+    'src1',
+    'SELECT 1',
+    ['DB.SCHEMA.TABLE'],
+    invalidation_mode := 'invalid_mode'
+);
+----
+invalidation_mode must be one of: last_altered, two_stage, ttl_only, manual
+
+statement error
+SELECT * FROM ducksync_create_cache(
+    'cache1',
+    'src1',
+    'SELECT 1',
+    ['DB.SCHEMA.TABLE'],
+    invalidation_mode := 'two_stage'
+);
+----
+ducksync_create_cache with invalidation_mode='two_stage' requires metadata_secret
+
+statement error
 SELECT * FROM ducksync_refresh();
 ----
 No function matches
@@ -155,6 +177,18 @@ No function matches
 # Test functions require initialization
 statement error
 SELECT * FROM ducksync_query('SELECT * FROM test', 'my_source');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_create_cache(
+    'orders_cache',
+    'prod',
+    'SELECT * FROM ORDERS',
+    ['DUCKSYNC_TEST.TEST_DATA.ORDERS'],
+    invalidation_mode := 'two_stage',
+    metadata_secret := 'sf_meta'
+);
 ----
 DuckSync not initialized
 

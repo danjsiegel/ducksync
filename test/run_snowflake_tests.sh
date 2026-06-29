@@ -21,7 +21,7 @@ else
 fi
 
 # Check required environment variables
-REQUIRED_VARS=(SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE)
+REQUIRED_VARS=(SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE SNOWFLAKE_SCHEMA_ROLE)
 for var in "${REQUIRED_VARS[@]}"; do
     if [ -z "${!var}" ]; then
         echo "ERROR: $var is not set"
@@ -69,6 +69,47 @@ PG_CONN="host=localhost port=5432 dbname=ducklake user=ducksync password=ducksyn
 # Default schema if not set
 SNOWFLAKE_SCHEMA="${SNOWFLAKE_SCHEMA:-TEST_DATA}"
 
+DATA_PW=$(printf '%s' "$SNOWFLAKE_PASSWORD" | sed "s/'/''/g")
+META_PW=$(printf '%s' "$SNOWFLAKE_SCHEMA_ROLE" | sed "s/'/''/g")
+
+DATA_SECRET_SQL=$(cat << HEREDOC
+CREATE OR REPLACE SECRET sf_test (
+    TYPE snowflake,
+    account '$SNOWFLAKE_ACCOUNT',
+    user '$SNOWFLAKE_USER',
+    password '$DATA_PW',
+    warehouse '$SNOWFLAKE_WAREHOUSE',
+    database '$SNOWFLAKE_DATABASE'
+);
+HEREDOC
+)
+
+META_SECRET_SQL=$(cat << HEREDOC
+CREATE OR REPLACE SECRET sf_meta (
+    TYPE snowflake,
+    account '$SNOWFLAKE_ACCOUNT',
+    user 'SNOWDUCKSSAA',
+    password '$META_PW',
+    database '$SNOWFLAKE_DATABASE',
+    role 'NO_COMPUTE_ROLE'
+);
+HEREDOC
+)
+
+cleanup_two_stage_test_row() {
+    $DUCKDB -c "
+INSTALL snowflake FROM community;
+LOAD snowflake;
+$DATA_SECRET_SQL
+SELECT * FROM snowflake_query(
+    'DELETE FROM $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS WHERE id = 9901',
+    'sf_test'
+);
+" >/dev/null 2>&1 || true
+}
+
+trap cleanup_two_stage_test_row EXIT
+
 # Helper: assert a value equals expected
 assert_equals() {
     local label="$1"
@@ -92,14 +133,7 @@ INSTALL snowflake FROM community;
 LOAD snowflake;
 
 -- Create Snowflake secret (requires snowflake extension to be loaded first)
-CREATE SECRET sf_test (
-    TYPE snowflake,
-    account '$SNOWFLAKE_ACCOUNT',
-    user '$SNOWFLAKE_USER',
-    password '$SNOWFLAKE_PASSWORD',
-    warehouse '$SNOWFLAKE_WAREHOUSE',
-    database '$SNOWFLAKE_DATABASE'
-);
+$DATA_SECRET_SQL
 
 SELECT 'Snowflake secret created!' as result;
 "
@@ -118,14 +152,7 @@ CURRENT_USER=$($DUCKDB -csv -noheader -c "
 LOAD '$EXTENSION';
 INSTALL snowflake FROM community;
 LOAD snowflake;
-CREATE SECRET sf_test (
-    TYPE snowflake,
-    account '$SNOWFLAKE_ACCOUNT',
-    user '$SNOWFLAKE_USER',
-    password '$SNOWFLAKE_PASSWORD',
-    warehouse '$SNOWFLAKE_WAREHOUSE',
-    database '$SNOWFLAKE_DATABASE'
-);
+$DATA_SECRET_SQL
 SELECT current_user FROM snowflake_query('SELECT CURRENT_USER() AS current_user', 'sf_test');
 " 2>/dev/null | tail -1)
 echo "  Connected as: $CURRENT_USER"
@@ -139,14 +166,7 @@ echo "=========================================="
 CUSTOMER_COUNT=$($DUCKDB -csv -noheader -c "
 INSTALL snowflake FROM community;
 LOAD snowflake;
-CREATE SECRET sf_test (
-    TYPE snowflake,
-    account '$SNOWFLAKE_ACCOUNT',
-    user '$SNOWFLAKE_USER',
-    password '$SNOWFLAKE_PASSWORD',
-    warehouse '$SNOWFLAKE_WAREHOUSE',
-    database '$SNOWFLAKE_DATABASE'
-);
+$DATA_SECRET_SQL
 SELECT cnt FROM snowflake_query('SELECT COUNT(*) AS cnt FROM $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS', 'sf_test');
 " 2>/dev/null | tail -1)
 echo "  CUSTOMERS: $CUSTOMER_COUNT rows"
@@ -169,14 +189,7 @@ LOAD '$EXTENSION';
 INSTALL snowflake FROM community;
 LOAD snowflake;
 
-CREATE SECRET sf_test (
-    TYPE snowflake,
-    account '$SNOWFLAKE_ACCOUNT',
-    user '$SNOWFLAKE_USER',
-    password '$SNOWFLAKE_PASSWORD',
-    warehouse '$SNOWFLAKE_WAREHOUSE',
-    database '$SNOWFLAKE_DATABASE'
-);
+$DATA_SECRET_SQL
 
 -- ============================================================
 -- Test 4: Full DuckSync Flow - setup, cache, refresh, query
@@ -264,6 +277,106 @@ echo "$FLOW_OUTPUT" | grep -q "customer_count" && echo "  ✓ PASS: Test 6 - Pas
 
 # Test 8: orders cache should be refreshed
 echo "$FLOW_OUTPUT" | grep -c "REFRESHED" | grep -q "2" && echo "  ✓ PASS: Test 8 - Custom schema refresh succeeded" || echo "  ✓ PASS: Test 8 - Custom schema refresh succeeded (orders_cache)"
+
+echo ""
+echo "=========================================="
+echo "Tests 9-11: Two-Stage Invalidation"
+echo "=========================================="
+
+# Ensure prior failed runs don't leave the test row behind.
+cleanup_two_stage_test_row
+
+TWO_STAGE_BASELINE_COUNT=$($DUCKDB -csv -noheader -c "
+INSTALL snowflake FROM community;
+LOAD snowflake;
+$DATA_SECRET_SQL
+SELECT cnt FROM snowflake_query(
+    'SELECT COUNT(*) AS cnt FROM $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS',
+    'sf_test'
+);
+" 2>/dev/null | tail -1)
+TWO_STAGE_BASELINE_COUNT=$(awk "BEGIN{printf \"%d\", $TWO_STAGE_BASELINE_COUNT + 0}")
+
+TWO_STAGE_OUTPUT=$($DUCKDB -csv -noheader -c "
+LOAD '$EXTENSION';
+INSTALL snowflake FROM community;
+LOAD snowflake;
+$DATA_SECRET_SQL
+$META_SECRET_SQL
+SELECT * FROM ducksync_setup_storage('$PG_CONN', '$TEST_DATA_DIR');
+SELECT * FROM ducksync_add_source('sf', 'snowflake', 'sf_test');
+SELECT * FROM ducksync_create_cache(
+    'customers_ts',
+    'sf',
+    'SELECT * FROM $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS',
+    ['$SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS'],
+    invalidation_mode := 'two_stage',
+    metadata_secret := 'sf_meta'
+);
+SELECT 'TS9A=' || result || '|' || message FROM ducksync_refresh('customers_ts');
+SELECT 'TS9B=' || result || '|' || message FROM ducksync_refresh('customers_ts');
+" 2>&1)
+
+echo "$TWO_STAGE_OUTPUT"
+
+echo "$TWO_STAGE_OUTPUT" | grep -q "^TS9A=REFRESHED|Cache refreshed successfully$" && \
+    echo "  ✓ PASS: Test 9a - First two_stage refresh succeeded" || \
+    (echo "  ✗ FAIL: Test 9a - First two_stage refresh did not succeed"; exit 1)
+
+echo "$TWO_STAGE_OUTPUT" | grep -q "^TS9B=SKIPPED|Stage 1 rows/bytes snapshot unchanged, no refresh needed$" && \
+    echo "  ✓ PASS: Test 9b - two_stage skipped when rows/bytes were unchanged" || \
+    (echo "  ✗ FAIL: Test 9b - two_stage did not skip unchanged rows/bytes"; exit 1)
+
+$DUCKDB -c "
+INSTALL snowflake FROM community;
+LOAD snowflake;
+$DATA_SECRET_SQL
+SELECT * FROM snowflake_query(
+    'INSERT INTO $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.CUSTOMERS (id, name, email, region) VALUES (9901, ''TwoStageTest'', ''ts@test.com'', ''US'')',
+    'sf_test'
+);
+" 2>&1
+
+sleep 2
+
+TWO_STAGE_MUTATION_OUTPUT=$($DUCKDB -csv -noheader -c "
+LOAD '$EXTENSION';
+INSTALL snowflake FROM community;
+LOAD snowflake;
+$DATA_SECRET_SQL
+$META_SECRET_SQL
+SELECT * FROM ducksync_setup_storage('$PG_CONN', '$TEST_DATA_DIR');
+SELECT * FROM ducksync_add_source('sf', 'snowflake', 'sf_test');
+SELECT 'TS10=' || result || '|' || message FROM ducksync_refresh('customers_ts');
+SELECT 'TS10_CACHED_COUNT=' || CAST(cnt AS VARCHAR) FROM ducksync_query(
+    'SELECT COUNT(*) AS cnt FROM customers_ts',
+    'sf'
+);
+SELECT 'TS11_SNAPSHOT_COUNT=' || CAST(COUNT(*) AS VARCHAR)
+FROM ducksync.ducksync.table_snapshots
+WHERE cache_name = 'customers_ts';
+SELECT 'TS11_SOURCE_TABLE=' || source_table
+FROM ducksync.ducksync.table_snapshots
+WHERE cache_name = 'customers_ts'
+ORDER BY source_table;
+" 2>&1)
+
+echo "$TWO_STAGE_MUTATION_OUTPUT"
+
+echo "$TWO_STAGE_MUTATION_OUTPUT" | grep -q "^TS10=REFRESHED|Cache refreshed successfully$" && \
+    echo "  ✓ PASS: Test 10 - two_stage detected the row change and refreshed" || \
+    (echo "  ✗ FAIL: Test 10 - two_stage did not refresh after the insert"; exit 1)
+
+EXPECTED_TWO_STAGE_COUNT=$((TWO_STAGE_BASELINE_COUNT + 1))
+ACTUAL_TWO_STAGE_COUNT=$(echo "$TWO_STAGE_MUTATION_OUTPUT" | sed -n 's/^TS10_CACHED_COUNT=//p' | tail -1)
+assert_equals "Test 10 - cached row count after two_stage refresh" "$EXPECTED_TWO_STAGE_COUNT" "$ACTUAL_TWO_STAGE_COUNT"
+
+ACTUAL_SNAPSHOT_COUNT=$(echo "$TWO_STAGE_MUTATION_OUTPUT" | sed -n 's/^TS11_SNAPSHOT_COUNT=//p' | tail -1)
+assert_equals "Test 11 - snapshot row count" "1" "$ACTUAL_SNAPSHOT_COUNT"
+
+echo "$TWO_STAGE_MUTATION_OUTPUT" | grep -q "^TS11_SOURCE_TABLE=$SNOWFLAKE_DATABASE\.$SNOWFLAKE_SCHEMA\.CUSTOMERS$" && \
+    echo "  ✓ PASS: Test 11 - Snapshot persisted for the monitored table" || \
+    (echo "  ✗ FAIL: Test 11 - Snapshot row missing expected source table"; exit 1)
 
 echo ""
 echo "=========================================="
