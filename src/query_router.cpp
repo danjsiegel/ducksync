@@ -104,8 +104,7 @@ static unique_ptr<TableRef> DuckSyncReplacementScan(ClientContext &context, Repl
 	if (!state.metadata_manager->GetState(cache.cache_name, cache_state) || !cache_state.HasLastRefresh()) {
 		auto requested_name = ReplacementScan::GetFullPath(input);
 		throw InvalidInputException("DuckSync table '" + requested_name + "' is monitored by cache '" +
-		                            cache.cache_name +
-		                            "' but is not yet cached. Run SELECT * FROM ducksync_refresh('" +
+		                            cache.cache_name + "' but is not yet cached. Run SELECT * FROM ducksync_refresh('" +
 		                            cache.cache_name + "'); or query it explicitly with ducksync_query(...).");
 	}
 

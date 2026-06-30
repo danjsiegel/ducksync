@@ -493,7 +493,8 @@ void DuckSyncMetadataManager::SaveTableSnapshot(const std::string &cache_name, c
 	}
 }
 
-std::unordered_map<std::string, TableSnapshot> DuckSyncMetadataManager::GetTableSnapshot(const std::string &cache_name) {
+std::unordered_map<std::string, TableSnapshot>
+DuckSyncMetadataManager::GetTableSnapshot(const std::string &cache_name) {
 	if (!initialized_) {
 		throw InternalException("DuckSyncMetadataManager not initialized");
 	}

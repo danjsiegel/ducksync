@@ -287,7 +287,8 @@ static unique_ptr<FunctionData> DuckSyncCreateCacheBind(ClientContext &context, 
 		throw InvalidInputException("invalidation_mode must be one of: last_altered, two_stage, ttl_only, manual");
 	}
 	if (result->invalidation_mode == "two_stage" && result->metadata_secret_name.empty()) {
-		throw InvalidInputException("ducksync_create_cache with invalidation_mode='two_stage' requires metadata_secret");
+		throw InvalidInputException(
+		    "ducksync_create_cache with invalidation_mode='two_stage' requires metadata_secret");
 	}
 
 	names.emplace_back("status");
@@ -682,8 +683,8 @@ static unique_ptr<FunctionData> DuckSyncServeBind(ClientContext &context, TableF
 	auto result = make_uniq<DuckSyncServeBindData>();
 
 	if (input.inputs.empty()) {
-		throw InvalidInputException(
-		    "ducksync_serve requires at least 1 argument: listen_uri[, token := ..., allow_other_hostname := ..., disable_ssl := ...]");
+		throw InvalidInputException("ducksync_serve requires at least 1 argument: listen_uri[, token := ..., "
+		                            "allow_other_hostname := ..., disable_ssl := ...]");
 	}
 
 	auto &state = GetDuckSyncState(context);
@@ -706,8 +707,7 @@ static unique_ptr<FunctionData> DuckSyncServeBind(ClientContext &context, TableF
 
 	auto allow_other_entry = input.named_parameters.find("allow_other_hostname");
 	if (allow_other_entry != input.named_parameters.end()) {
-		sql << ", allow_other_hostname := "
-		    << (allow_other_entry->second.GetValue<bool>() ? "true" : "false");
+		sql << ", allow_other_hostname := " << (allow_other_entry->second.GetValue<bool>() ? "true" : "false");
 	}
 
 	auto disable_ssl_entry = input.named_parameters.find("disable_ssl");
@@ -736,7 +736,8 @@ static unique_ptr<FunctionData> DuckSyncServeBind(ClientContext &context, TableF
 	return std::move(result);
 }
 
-static unique_ptr<GlobalTableFunctionState> DuckSyncServeInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+static unique_ptr<GlobalTableFunctionState> DuckSyncServeInitGlobal(ClientContext &context,
+                                                                    TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<DuckSyncServeBindData>();
 	return InitStreamingQueryGlobalState(context, bind_data.execution_query);
 }
@@ -910,9 +911,8 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 	} else {
 		// Pass through to Snowflake
 		result->use_cache = false;
-		result->execution_query =
-		    "SELECT * FROM snowflake_query('" + EscapeSqlStringLiteral(result->sql_query) + "', '" +
-		    EscapeSqlStringLiteral(source.secret_name) + "')";
+		result->execution_query = "SELECT * FROM snowflake_query('" + EscapeSqlStringLiteral(result->sql_query) +
+		                          "', '" + EscapeSqlStringLiteral(source.secret_name) + "')";
 	}
 
 	// Use Prepare() to discover schema without executing the query
@@ -980,10 +980,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(add_source_func);
 
 	// Register ducksync_create_cache
-	TableFunction create_cache_func("ducksync_create_cache",
-	                                {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                                 LogicalType::LIST(LogicalType::VARCHAR)},
-	                                DuckSyncCreateCacheFunction, DuckSyncCreateCacheBind);
+	TableFunction create_cache_func(
+	    "ducksync_create_cache",
+	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)},
+	    DuckSyncCreateCacheFunction, DuckSyncCreateCacheBind);
 	create_cache_func.varargs = LogicalType::BIGINT;
 	create_cache_func.named_parameters["invalidation_mode"] = LogicalType::VARCHAR;
 	create_cache_func.named_parameters["metadata_secret"] = LogicalType::VARCHAR;
