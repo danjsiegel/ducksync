@@ -22,6 +22,34 @@ set(EXTENSION_SOURCES
     src/cleanup_manager.cpp
 )
 
+# Detect DuckDB API shape: BaseTableRef field names changed between v1.5.4 and main.
+# In v1.5.4: catalog_name / schema_name. In main+: catalog / schema.
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include)
+check_cxx_source_compiles("
+#include \"duckdb/parser/tableref/basetableref.hpp\"
+int main() { duckdb::BaseTableRef r; (void)r.catalog; return 0; }
+" DUCKDB_BASETABLEREF_HAS_CATALOG)
+if(DUCKDB_BASETABLEREF_HAS_CATALOG)
+    add_compile_definitions(DUCKDB_BASETABLEREF_HAS_CATALOG)
+endif()
+
+# Detect whether PreparedStatement::GetNames() returns vector<string> or vector<Identifier>.
+check_cxx_source_compiles("
+#include \"duckdb.hpp\"
+int main() {
+    duckdb::DuckDB db;
+    duckdb::Connection conn(db);
+    auto p = conn.Prepare(\"SELECT 1 AS x\");
+    duckdb::Identifier id = p->GetNames()[0];
+    (void)id;
+    return 0;
+}
+" DUCKDB_GETNAMES_RETURNS_IDENTIFIER)
+if(DUCKDB_GETNAMES_RETURNS_IDENTIFIER)
+    add_compile_definitions(DUCKDB_GETNAMES_RETURNS_IDENTIFIER)
+endif()
+
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
