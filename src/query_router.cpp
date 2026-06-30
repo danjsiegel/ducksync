@@ -109,14 +109,15 @@ static unique_ptr<TableRef> DuckSyncReplacementScan(ClientContext &context, Repl
 	}
 
 	auto table_ref = make_uniq<BaseTableRef>();
-#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG
-	table_ref->catalog = state.storage_manager->GetDuckLakeName();
-	table_ref->schema = cache.source_name;
-#else
+#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG_NAME
 	table_ref->catalog_name = state.storage_manager->GetDuckLakeName();
 	table_ref->schema_name = cache.source_name;
-#endif
 	table_ref->table_name = cache.cache_name;
+#else
+	table_ref->table_name.catalog = state.storage_manager->GetDuckLakeName();
+	table_ref->table_name.schema = cache.source_name;
+	table_ref->table_name.name = cache.cache_name;
+#endif
 	return std::move(table_ref);
 }
 

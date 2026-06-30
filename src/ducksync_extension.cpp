@@ -440,22 +440,23 @@ static void RewriteTablesInTableRef(TableRef &ref, const std::unordered_map<std:
 // Helper to build fully qualified table name for matching
 static std::string BuildFullTableName(const BaseTableRef &base) {
 	std::string full_name;
-#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG
-	if (!base.catalog.empty()) {
-		full_name += base.catalog + ".";
-	}
-	if (!base.schema.empty()) {
-		full_name += base.schema + ".";
-	}
-#else
+#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG_NAME
 	if (!base.catalog_name.empty()) {
 		full_name += base.catalog_name + ".";
 	}
 	if (!base.schema_name.empty()) {
 		full_name += base.schema_name + ".";
 	}
-#endif
 	full_name += base.table_name;
+#else
+	if (!base.table_name.catalog.empty()) {
+		full_name += base.table_name.catalog + ".";
+	}
+	if (!base.table_name.schema.empty()) {
+		full_name += base.table_name.schema + ".";
+	}
+	full_name += base.table_name.name;
+#endif
 	return full_name;
 }
 
@@ -534,14 +535,15 @@ static void RewriteTablesInTableRef(TableRef &ref, const std::unordered_map<std:
 		auto it = rewrites.find(full_name);
 		if (it != rewrites.end()) {
 			// Rewrite to DuckLake table: catalog.schema.table_name
-#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG
-			base.catalog = it->second.catalog;
-			base.schema = it->second.schema;
-#else
+#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG_NAME
 			base.catalog_name = it->second.catalog;
 			base.schema_name = it->second.schema;
-#endif
 			base.table_name = it->second.table_name;
+#else
+			base.table_name.catalog = it->second.catalog;
+			base.table_name.schema = it->second.schema;
+			base.table_name.name = it->second.table_name;
+#endif
 		}
 		break;
 	}
@@ -744,10 +746,10 @@ static unique_ptr<FunctionData> DuckSyncServeBind(ClientContext &context, TableF
 	auto &prep_names = prepared->GetNames();
 	for (idx_t i = 0; i < prep_types.size(); i++) {
 		return_types.push_back(prep_types[i]);
-#ifdef DUCKDB_GETNAMES_RETURNS_IDENTIFIER
-		names.push_back(prep_names[i].ToString());
-#else
+#ifdef DUCKDB_GETNAMES_RETURNS_STRING
 		names.push_back(prep_names[i]);
+#else
+		names.push_back(prep_names[i].GetName());
 #endif
 	}
 
@@ -948,14 +950,14 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 	auto &prep_names = prepared->GetNames();
 	for (idx_t i = 0; i < prep_types.size(); i++) {
 		return_types.push_back(prep_types[i]);
-#ifdef DUCKDB_GETNAMES_RETURNS_IDENTIFIER
-		names.push_back(prep_names[i].ToString());
-		result->result_types.push_back(prep_types[i]);
-		result->result_names.push_back(prep_names[i].ToString());
-#else
+#ifdef DUCKDB_GETNAMES_RETURNS_STRING
 		names.push_back(prep_names[i]);
 		result->result_types.push_back(prep_types[i]);
 		result->result_names.push_back(prep_names[i]);
+#else
+		names.push_back(prep_names[i].GetName());
+		result->result_types.push_back(prep_types[i]);
+		result->result_names.push_back(prep_names[i].GetName());
 #endif
 	}
 
