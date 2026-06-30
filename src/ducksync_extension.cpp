@@ -1,6 +1,7 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "ducksync_extension.hpp"
+#include "duckdb_compat.hpp"
 #include "metadata_manager.hpp"
 #include "storage_manager.hpp"
 #include "refresh_orchestrator.hpp"
@@ -439,25 +440,7 @@ static void RewriteTablesInTableRef(TableRef &ref, const std::unordered_map<std:
 
 // Helper to build fully qualified table name for matching
 static std::string BuildFullTableName(const BaseTableRef &base) {
-	std::string full_name;
-#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG_NAME
-	if (!base.catalog_name.empty()) {
-		full_name += base.catalog_name + ".";
-	}
-	if (!base.schema_name.empty()) {
-		full_name += base.schema_name + ".";
-	}
-	full_name += base.table_name;
-#else
-	if (!base.table_name.catalog.empty()) {
-		full_name += base.table_name.catalog + ".";
-	}
-	if (!base.table_name.schema.empty()) {
-		full_name += base.table_name.schema + ".";
-	}
-	full_name += base.table_name.name;
-#endif
-	return full_name;
+	return ducksync::GetFullTableName(base);
 }
 
 // Helper to uppercase a string for case-insensitive comparison
@@ -535,15 +518,7 @@ static void RewriteTablesInTableRef(TableRef &ref, const std::unordered_map<std:
 		auto it = rewrites.find(full_name);
 		if (it != rewrites.end()) {
 			// Rewrite to DuckLake table: catalog.schema.table_name
-#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG_NAME
-			base.catalog_name = it->second.catalog;
-			base.schema_name = it->second.schema;
-			base.table_name = it->second.table_name;
-#else
-			base.table_name.catalog = it->second.catalog;
-			base.table_name.schema = it->second.schema;
-			base.table_name.name = it->second.table_name;
-#endif
+			ducksync::SetTableRefFields(base, it->second.catalog, it->second.schema, it->second.table_name);
 		}
 		break;
 	}
@@ -746,11 +721,7 @@ static unique_ptr<FunctionData> DuckSyncServeBind(ClientContext &context, TableF
 	auto &prep_names = prepared->GetNames();
 	for (idx_t i = 0; i < prep_types.size(); i++) {
 		return_types.push_back(prep_types[i]);
-#ifdef DUCKDB_GETNAMES_RETURNS_STRING
-		names.push_back(prep_names[i]);
-#else
-		names.push_back(prep_names[i].GetName());
-#endif
+		names.push_back(ducksync::ToStringName(prep_names[i]));
 	}
 
 	return std::move(result);
@@ -950,15 +921,9 @@ static unique_ptr<FunctionData> DuckSyncQueryBind(ClientContext &context, TableF
 	auto &prep_names = prepared->GetNames();
 	for (idx_t i = 0; i < prep_types.size(); i++) {
 		return_types.push_back(prep_types[i]);
-#ifdef DUCKDB_GETNAMES_RETURNS_STRING
-		names.push_back(prep_names[i]);
+		names.push_back(ducksync::ToStringName(prep_names[i]));
 		result->result_types.push_back(prep_types[i]);
-		result->result_names.push_back(prep_names[i]);
-#else
-		names.push_back(prep_names[i].GetName());
-		result->result_types.push_back(prep_types[i]);
-		result->result_names.push_back(prep_names[i].GetName());
-#endif
+		result->result_names.push_back(ducksync::ToStringName(prep_names[i]));
 	}
 
 	return std::move(result);

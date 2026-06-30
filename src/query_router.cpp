@@ -1,4 +1,5 @@
 #include "query_router.hpp"
+#include "duckdb_compat.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/replacement_scan.hpp"
@@ -109,15 +110,8 @@ static unique_ptr<TableRef> DuckSyncReplacementScan(ClientContext &context, Repl
 	}
 
 	auto table_ref = make_uniq<BaseTableRef>();
-#ifdef DUCKDB_BASETABLEREF_HAS_CATALOG_NAME
-	table_ref->catalog_name = state.storage_manager->GetDuckLakeName();
-	table_ref->schema_name = cache.source_name;
-	table_ref->table_name = cache.cache_name;
-#else
-	table_ref->table_name.catalog = state.storage_manager->GetDuckLakeName();
-	table_ref->table_name.schema = cache.source_name;
-	table_ref->table_name.name = cache.cache_name;
-#endif
+	ducksync::SetTableRefFields(*table_ref, state.storage_manager->GetDuckLakeName(), cache.source_name,
+	                            cache.cache_name);
 	return std::move(table_ref);
 }
 
