@@ -89,8 +89,7 @@ std::string GetFullTableName(const RefT &base) {
 // implicit const char* constructor is invoked without naming the Identifier type
 // (which doesn't exist in v1.5.4 headers and would fail non-dependent name lookup).
 template <typename RefT = duckdb::BaseTableRef>
-void SetTableRefFields(RefT &base, const std::string &catalog, const std::string &schema,
-                       const std::string &table) {
+void SetTableRefFields(RefT &base, const std::string &catalog, const std::string &schema, const std::string &table) {
 	if constexpr (detail::has_catalog_name<RefT>::value) {
 		// Old API (v1.5.4 / v1.5-variegata): direct string fields
 		base.catalog_name = catalog;
@@ -120,4 +119,3 @@ std::string ToStringName(const NameT &name) {
 }
 
 } // namespace ducksync
-
