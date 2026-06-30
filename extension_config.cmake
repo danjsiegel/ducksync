@@ -6,6 +6,12 @@ duckdb_extension_load(ducksync
     LOAD_TESTS
 )
 
+if(MSVC)
+    set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce" FORCE)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/std:c++17>)
+endif()
+
 # Any extra extensions that should be built
 # These are dependencies that DuckSync needs at runtime
 # duckdb_extension_load(postgres)

@@ -86,7 +86,10 @@ CREATE SECRET sf_test (
 
 -- Test Snowflake connection
 SELECT '=== Testing Snowflake Connection ===' as section;
-SELECT * FROM snowflake_query('SELECT CURRENT_USER() as user, CURRENT_ROLE() as role', 'sf_test');
+-- Use single-column snowflake_query() calls here to avoid the known Arrow scanner crash
+-- for bare multi-column results from the Snowflake community extension.
+SELECT * FROM snowflake_query('SELECT CURRENT_USER() as current_user', 'sf_test');
+SELECT * FROM snowflake_query('SELECT CURRENT_ROLE() as current_role', 'sf_test');
 
 -- Initialize DuckSync
 SELECT '=== Initializing DuckSync ===' as section;
