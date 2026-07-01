@@ -58,7 +58,7 @@ cp .env.example .env
 
 - Snowflake account with ACCOUNTADMIN access (for initial setup)
 - A warehouse (default: `COMPUTE_WH`)
-- DuckDB v1.4.4+ (use `brew upgrade duckdb` to update)
+- DuckDB v1.5.4+ (use `brew upgrade duckdb` to update)
 - ADBC Snowflake driver (see below)
 
 ### Step 0: Install ADBC Snowflake Driver
@@ -100,6 +100,7 @@ SNOWFLAKE_PASSWORD=your_password
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
 SNOWFLAKE_DATABASE=DUCKSYNC_TEST
 SNOWFLAKE_SCHEMA=TEST_DATA
+SNOWFLAKE_SCHEMA_ROLE=your_no_compute_role_password_or_token
 ```
 
 ### Minimum Permissions
@@ -123,6 +124,7 @@ The test service account needs:
 | `SNOWFLAKE_DATABASE` | Yes | Database name |
 | `SNOWFLAKE_SCHEMA` | No | Default schema (default: `TEST_DATA`) |
 | `SNOWFLAKE_ROLE` | No | Role to use (default: user's default role) |
+| `SNOWFLAKE_SCHEMA_ROLE` | Yes | Password or token for the no-compute metadata user used by Stage 1 `SHOW TABLES` checks |
 
 ## CI/CD
 
@@ -135,6 +137,7 @@ env:
   SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
   SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+  SNOWFLAKE_SCHEMA_ROLE: ${{ secrets.SNOWFLAKE_SCHEMA_ROLE }}
 ```
 
 Tests that require Snowflake use `require-env` and will be skipped if credentials are not set.

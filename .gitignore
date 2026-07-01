@@ -4,6 +4,7 @@ cmake-build-*/
 
 # IDE
 .idea/
+.cache/
 .vscode/
 *.swp
 *.swo
@@ -28,3 +29,5 @@ venv/
 # Docker volumes
 postgres_data/
 minio_data/
+
+plans/

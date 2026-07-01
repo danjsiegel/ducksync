@@ -7,7 +7,7 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-.PHONY: test integration-test test-docker-up test-docker-down clean-test-data clean-all update-version test-compat
+.PHONY: test integration-test test-docker-up test-docker-down clean-test-data clean-all update-version test-compat install-adbc-driver
 
 test: release test-docker-up
 	@chmod +x $(PROJ_DIR)test/run_tests.sh
@@ -89,3 +89,22 @@ endif
 	@echo ""
 	@echo "NOTE: Restore submodule to stable version when done:"
 	@echo "  cd duckdb && git checkout v1.4.4"
+
+install-adbc-driver:
+	@src=$$(find "$$HOME/.duckdb/extensions" -name libadbc_driver_snowflake.so -print -quit 2>/dev/null); \
+	if [ -z "$$src" ]; then \
+		echo "ERROR: Could not find libadbc_driver_snowflake.so under $$HOME/.duckdb/extensions/"; \
+		echo "Run 'INSTALL snowflake FROM community' in DuckDB first."; \
+		exit 1; \
+	fi; \
+	if cp "$$src" /usr/local/lib/libadbc_driver_snowflake.so 2>/dev/null; then \
+		echo "Installed (copy)"; \
+		exit 0; \
+	fi; \
+	if sudo ln -sf "$$src" /usr/local/lib/libadbc_driver_snowflake.so; then \
+		echo "Installed (symlink via sudo)"; \
+		exit 0; \
+	fi; \
+	echo "ERROR: Failed to install libadbc_driver_snowflake.so from $$src"; \
+	echo "Copy or symlink it manually to /usr/local/lib/libadbc_driver_snowflake.so"; \
+	exit 1

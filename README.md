@@ -3,19 +3,22 @@
 ### 📉 [How to Reduce Snowflake Compute Costs with Smart DuckDB Caching](https://danjsiegel.substack.com/p/how-to-reduce-snowflake-compute-costs)
 *A technical breakdown of intelligent query result caching and architectural cost optimization.*
 
-**DuckSync** is a DuckDB extension that provides intelligent query result caching between DuckDB and Snowflake. It uses **DuckLake** for storage (PostgreSQL catalog + Parquet files) and features transparent query routing, TTL-based expiration, and smart refresh based on source table metadata.
+**DuckSync** is a DuckDB extension that provides intelligent query result caching between DuckDB and Snowflake. It uses **DuckLake** for storage (PostgreSQL catalog + Parquet files) and supports explicit Quack serving, two-stage freshness checks, and transparent cached-table reads for DuckDB-native clients.
 
 ## Features
 
-- **Transparent Query Routing**: Queries automatically route to cached data when available
-- **Smart Refresh**: Only refreshes when source tables have changed (checks `last_altered`)
+- **Quack Server Lifecycle**: Start and stop a DuckDB Quack endpoint with `ducksync_serve(...)` and `ducksync_stop(...)`
+- **Transparent Query Routing**: `ducksync_query(...)` routes fully cached queries to local DuckLake data
+- **Transparent Cached-Table Reads**: After a cache is refreshed, `SELECT * FROM orders` can resolve directly to `orders_cache`
+- **Two-Stage Invalidation**: Use `invalidation_mode = 'two_stage'` with `metadata_secret` to skip warehouse-backed checks when `SHOW TABLES` rows/bytes are unchanged
+- **Smart Refresh**: Refreshes only when source tables have changed
 - **TTL Support**: Configurable cache expiration with time-to-live
 - **DuckLake Storage**: Uses DuckLake for efficient Parquet-based storage
 - **PostgreSQL Catalog**: Metadata stored in DuckLake's PostgreSQL catalog
 
 ## Prerequisites
 
-DuckSync automatically installs the required extensions (DuckLake, Snowflake) on first use.
+DuckSync automatically installs the required extensions it needs on demand: DuckLake and Snowflake for storage/querying, and Quack when you start a server with `ducksync_serve(...)`.
 
 You'll need:
 1. **PostgreSQL database** - for DuckLake catalog storage
@@ -66,6 +69,9 @@ SELECT * FROM ducksync_refresh('sales_summary');
 
 -- Query via ducksync_query (smart routing)
 SELECT * FROM ducksync_query('SELECT * FROM PROD.PUBLIC.SALES WHERE region = ''US''', 'prod');
+
+-- Or read the cached table transparently once refreshed
+SELECT * FROM SALES;
 ```
 
 ### Option B: Full Setup (New Users)
@@ -104,6 +110,27 @@ Full setup - attaches DuckLake and initializes DuckSync. Use if you don't have D
 - `pg_connection_string`: PostgreSQL connection string (libpq format)
 - `data_path`: Local path or S3 path for Parquet data files
 
+### `ducksync_serve(listen_uri [, token := ..., allow_other_hostname := ..., disable_ssl := ...])`
+
+Start a Quack listener explicitly for DuckDB-native clients.
+
+**Example:**
+```sql
+SELECT * FROM ducksync_serve('quack:localhost');
+SELECT * FROM ducksync_serve('quack:localhost', token := 'mytoken');
+```
+
+Then connect from another DuckDB client with Quack using the same listen URI.
+
+### `ducksync_stop(listen_uri)`
+
+Stop a previously started Quack listener.
+
+**Example:**
+```sql
+SELECT * FROM ducksync_stop('quack:localhost');
+```
+
 ### `ducksync_add_source(source_name, driver_type, secret_name, [passthrough_enabled])`
 
 Register a Snowflake data source.
@@ -124,6 +151,20 @@ Define a cached query result.
 - `source_query`: SQL query to cache results from
 - `monitor_tables`: List of tables to monitor for changes (e.g., `['DB.SCHEMA.TABLE']`)
 - `ttl_seconds` (optional): Cache TTL in seconds (NULL = no expiration)
+- `invalidation_mode` (named, optional): `last_altered`, `two_stage`, `ttl_only`, or `manual`
+- `metadata_secret` (named, required for `two_stage`): no-warehouse Snowflake secret for Stage 1 `SHOW TABLES`
+
+**Two-stage invalidation example:**
+```sql
+SELECT * FROM ducksync_create_cache(
+    'orders_cache',
+    'prod',
+    'SELECT * FROM ORDERS',
+    ['DUCKSYNC_TEST.TEST_DATA.ORDERS'],
+    invalidation_mode := 'two_stage',
+    metadata_secret := 'sf_meta'
+);
+```
 
 ### `ducksync_refresh(cache_name, [force])`
 
@@ -191,6 +232,29 @@ SELECT * FROM ducksync_query(
 
 **Best Practice:** Create caches with `monitor_tables` matching your Snowflake table names for automatic routing.
 
+### Transparent cached-table reads
+
+Once a cache has been refreshed, DuckSync also installs a `ReplacementScan` hook for DuckDB-native reads:
+
+```sql
+SELECT * FROM ducksync_create_cache(
+    'orders_cache',
+    'prod',
+    'SELECT * FROM ORDERS',
+    ['DUCKSYNC_TEST.TEST_DATA.ORDERS']
+);
+SELECT * FROM ducksync_refresh('orders_cache');
+
+-- Transparent cache hit
+SELECT * FROM ORDERS;
+SELECT * FROM main.orders;
+SELECT * FROM TEST_DATA.ORDERS;
+```
+
+**Naming convention:** keep the source table name and cache table name distinct, e.g. `orders` routes to `orders_cache`.
+
+**Miss behavior:** if the monitored table has not been refreshed yet, DuckSync raises an explicit error telling you to run `ducksync_refresh(...)` or use `ducksync_query(...)`. Unknown tables still return the normal DuckDB catalog error.
+
 ### Direct DuckLake Access
 
 Cached data is stored in standard DuckLake tables. Query them directly with normal DuckDB SQL:
@@ -224,14 +288,15 @@ JOIN local_segments l ON c.id = l.customer_id;
 DuckSync uses a "smart check" approach to minimize unnecessary data transfers:
 
 1. **TTL Check**: If `expires_at < now()`, trigger refresh
-2. **Metadata Check**: Query `information_schema.tables` for `last_altered` timestamps
-3. **Hash Comparison**: Compare hash of current metadata vs stored `source_state_hash`
-4. **Skip if Match**: If hashes match and TTL not expired, skip refresh
-5. **Refresh if Changed**: Execute query, write to DuckLake, update state
+2. **Stage 1 (optional)**: With `invalidation_mode = 'two_stage'`, run `SHOW TABLES` using `metadata_secret` and compare stored `rows`/`bytes`
+3. **Stage 2**: If needed, query `information_schema.tables.last_altered` with the warehouse-backed data secret
+4. **Hash Comparison**: Compare hash of current metadata vs stored `source_state_hash`
+5. **Skip if Match**: If hashes match and TTL not expired, skip refresh
+6. **Refresh if Changed**: Execute query, write to DuckLake, update state
 
 This approach means:
-- Zero Snowflake compute cost when data hasn't changed
-- Sub-second metadata checks vs full query execution
+- Zero warehouse wake-up when Stage 1 rows/bytes are unchanged
+- Lower-cost false-positive filtering with Stage 2 `last_altered`
 - Automatic refresh when source tables are modified
 
 ## Architecture
@@ -273,7 +338,7 @@ This approach means:
 ### Prerequisites
 
 - Docker (for PostgreSQL)
-- DuckDB v1.5.0+
+- DuckDB v1.5.4+
 - ADBC Snowflake driver (for Snowflake integration tests)
 
 ### Run Tests
@@ -313,7 +378,7 @@ make release
 
 ## Dependencies
 
-- **DuckDB v1.5.0+**
+- **DuckDB v1.5.4+**
 - **DuckLake extension** - auto-installed ([docs](https://ducklake.select/docs/))
 - **Snowflake extension** - auto-installed ([docs](https://duckdb.org/community_extensions/extensions/snowflake))
 

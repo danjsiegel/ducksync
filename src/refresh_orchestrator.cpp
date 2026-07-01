@@ -2,6 +2,7 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include <sstream>
 #include <chrono>
 #include <iomanip>
@@ -12,6 +13,57 @@ namespace duckdb {
 // Helper to create a connection from context
 static Connection MakeConnection(ClientContext &context) {
 	return Connection(*context.db);
+}
+
+struct ParsedMonitorTable {
+	std::string database_name;
+	std::string schema_name;
+	std::string table_name;
+	std::string full_name;
+};
+
+static std::string EscapeSqlStringLiteral(const std::string &value) {
+	std::string escaped;
+	escaped.reserve(value.size());
+	for (char c : value) {
+		if (c == '\'') {
+			escaped += "''";
+		} else {
+			escaped += c;
+		}
+	}
+	return escaped;
+}
+
+static std::string ToLower(const std::string &value) {
+	std::string lower = value;
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+	               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return lower;
+}
+
+static ParsedMonitorTable ParseMonitorTableName(const std::string &monitor_table) {
+	auto parts = StringUtil::Split(monitor_table, ".");
+	if (parts.size() != 3) {
+		throw InvalidInputException("Monitor table '" + monitor_table +
+		                            "' must be fully qualified as DATABASE.SCHEMA.TABLE");
+	}
+
+	ParsedMonitorTable parsed;
+	parsed.database_name = parts[0];
+	parsed.schema_name = parts[1];
+	parsed.table_name = parts[2];
+	parsed.full_name = parts[0] + "." + parts[1] + "." + parts[2];
+	return parsed;
+}
+
+template <typename SnapshotType>
+static void SaveSnapshots(DuckSyncMetadataManager &metadata_manager, const std::string &cache_name,
+                          const std::unordered_map<std::string, SnapshotType> &snapshots) {
+	metadata_manager.DeleteTableSnapshots(cache_name);
+	for (const auto &entry : snapshots) {
+		metadata_manager.SaveTableSnapshot(cache_name, entry.first, entry.second.rows, entry.second.bytes);
+	}
 }
 
 RefreshOrchestrator::RefreshOrchestrator(ClientContext &context, DuckSyncMetadataManager &metadata_manager,
@@ -47,50 +99,172 @@ RefreshStatus RefreshOrchestrator::Refresh(const std::string &cache_name, bool f
 		CacheState state;
 		bool has_state = metadata_manager_.GetState(cache_name, state);
 
-		// Step 4: Check if force refresh or TTL expired
-		bool needs_refresh = force;
-
-		if (!force && has_state) {
-			if (IsTTLExpired(state, cache)) {
-				needs_refresh = true;
+		// Step 4: Force / manual dispatch
+		if (force) {
+			int64_t rows = ExecuteRefresh(cache, source);
+			std::string state_hash;
+			if (cache.invalidation_mode == "last_altered" || cache.invalidation_mode == "two_stage") {
+				auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+				state_hash = GenerateStateHash(source_metadata);
 			}
-		} else if (!has_state) {
-			// No state means never refreshed
-			needs_refresh = true;
+			if (cache.invalidation_mode == "two_stage") {
+				auto rows_bytes = GetSourceTableRowsAndBytes(cache.metadata_secret_name, cache.monitor_tables);
+				SaveSnapshots(metadata_manager_, cache_name, rows_bytes);
+			}
+			UpdateCacheState(cache_name, state_hash, cache);
+
+			auto end_time = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+			status.result = RefreshResult::REFRESHED;
+			status.message = "Cache refreshed successfully";
+			status.rows_refreshed = rows;
+			status.has_rows = true;
+			status.duration_ms = static_cast<double>(duration.count());
+			status.has_duration = true;
+			return status;
 		}
 
-		// Step 5: Smart check - query source metadata
-		if (!needs_refresh && has_state && state.HasStateHash()) {
+		if (cache.invalidation_mode == "manual") {
+			status.result = RefreshResult::SKIPPED;
+			status.message = "Cache refresh skipped because invalidation_mode is manual";
+			return status;
+		}
+
+		if (!has_state) {
+			int64_t rows = ExecuteRefresh(cache, source);
+			std::string state_hash;
+			if (cache.invalidation_mode == "last_altered" || cache.invalidation_mode == "two_stage") {
+				auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+				state_hash = GenerateStateHash(source_metadata);
+			}
+			if (cache.invalidation_mode == "two_stage") {
+				auto rows_bytes = GetSourceTableRowsAndBytes(cache.metadata_secret_name, cache.monitor_tables);
+				SaveSnapshots(metadata_manager_, cache_name, rows_bytes);
+			}
+			UpdateCacheState(cache_name, state_hash, cache);
+
+			auto end_time = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+			status.result = RefreshResult::REFRESHED;
+			status.message = "Cache refreshed successfully";
+			status.rows_refreshed = rows;
+			status.has_rows = true;
+			status.duration_ms = static_cast<double>(duration.count());
+			status.has_duration = true;
+			return status;
+		}
+
+		if (IsTTLExpired(state, cache)) {
+			int64_t rows = ExecuteRefresh(cache, source);
+			std::string state_hash;
+			if (cache.invalidation_mode == "last_altered" || cache.invalidation_mode == "two_stage") {
+				auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+				state_hash = GenerateStateHash(source_metadata);
+			}
+			if (cache.invalidation_mode == "two_stage") {
+				auto rows_bytes = GetSourceTableRowsAndBytes(cache.metadata_secret_name, cache.monitor_tables);
+				SaveSnapshots(metadata_manager_, cache_name, rows_bytes);
+			}
+			UpdateCacheState(cache_name, state_hash, cache);
+
+			auto end_time = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+			status.result = RefreshResult::REFRESHED;
+			status.message = "Cache refreshed successfully";
+			status.rows_refreshed = rows;
+			status.has_rows = true;
+			status.duration_ms = static_cast<double>(duration.count());
+			status.has_duration = true;
+			return status;
+		}
+
+		if (cache.invalidation_mode == "ttl_only") {
+			status.result = RefreshResult::SKIPPED;
+			status.message = "Cache TTL is still valid, no refresh needed";
+			return status;
+		}
+
+		if (cache.invalidation_mode == "two_stage") {
+			auto stored_snapshots = metadata_manager_.GetTableSnapshot(cache_name);
+			auto current_snapshots = GetSourceTableRowsAndBytes(cache.metadata_secret_name, cache.monitor_tables);
+
+			bool stage1_changed = stored_snapshots.size() != current_snapshots.size();
+			if (!stage1_changed) {
+				for (const auto &entry : current_snapshots) {
+					auto stored = stored_snapshots.find(entry.first);
+					if (stored == stored_snapshots.end() || stored->second.rows != entry.second.rows ||
+					    stored->second.bytes != entry.second.bytes) {
+						stage1_changed = true;
+						break;
+					}
+				}
+			}
+
+			if (!stage1_changed) {
+				status.result = RefreshResult::SKIPPED;
+				status.message = "Stage 1 rows/bytes snapshot unchanged, no refresh needed";
+				return status;
+			}
+
 			auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
 			auto new_hash = GenerateStateHash(source_metadata);
-
-			if (new_hash != state.source_state_hash) {
-				needs_refresh = true;
+			if (state.HasStateHash() && new_hash == state.source_state_hash) {
+				SaveSnapshots(metadata_manager_, cache_name, current_snapshots);
+				status.result = RefreshResult::SKIPPED;
+				status.message = "Stage 1 changed but Stage 2 last_altered did not; skipping false positive refresh";
+				return status;
 			}
-		} else if (!force) {
-			// First time or no hash stored
-			needs_refresh = true;
+
+			int64_t rows = ExecuteRefresh(cache, source);
+			auto refreshed_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+			auto state_hash = GenerateStateHash(refreshed_metadata);
+			auto refreshed_snapshots = GetSourceTableRowsAndBytes(cache.metadata_secret_name, cache.monitor_tables);
+			SaveSnapshots(metadata_manager_, cache_name, refreshed_snapshots);
+			UpdateCacheState(cache_name, state_hash, cache);
+
+			auto end_time = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+			status.result = RefreshResult::REFRESHED;
+			status.message = "Cache refreshed successfully";
+			status.rows_refreshed = rows;
+			status.has_rows = true;
+			status.duration_ms = static_cast<double>(duration.count());
+			status.has_duration = true;
+			return status;
 		}
 
-		if (!needs_refresh) {
+		if (!state.HasStateHash()) {
+			int64_t rows = ExecuteRefresh(cache, source);
+			auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+			auto state_hash = GenerateStateHash(source_metadata);
+			UpdateCacheState(cache_name, state_hash, cache);
+
+			auto end_time = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+			status.result = RefreshResult::REFRESHED;
+			status.message = "Cache refreshed successfully";
+			status.rows_refreshed = rows;
+			status.has_rows = true;
+			status.duration_ms = static_cast<double>(duration.count());
+			status.has_duration = true;
+			return status;
+		}
+
+		auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+		auto new_hash = GenerateStateHash(source_metadata);
+		if (new_hash == state.source_state_hash) {
 			status.result = RefreshResult::SKIPPED;
 			status.message = "Cache is fresh, no refresh needed";
 			return status;
 		}
 
-		// Step 6: Execute refresh
 		int64_t rows = ExecuteRefresh(cache, source);
-
-		// Step 7: Get new source metadata hash
-		auto source_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
-		auto state_hash = GenerateStateHash(source_metadata);
-
-		// Step 8: Update state
+		auto refreshed_metadata = GetSourceTableMetadata(source.secret_name, cache.monitor_tables);
+		auto state_hash = GenerateStateHash(refreshed_metadata);
 		UpdateCacheState(cache_name, state_hash, cache);
 
 		auto end_time = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
 		status.result = RefreshResult::REFRESHED;
 		status.message = "Cache refreshed successfully";
 		status.rows_refreshed = rows;
@@ -139,58 +313,85 @@ RefreshOrchestrator::GetSourceTableMetadata(const std::string &secret_name,
 	std::unordered_map<std::string, std::string> metadata;
 	auto conn = MakeConnection(context_);
 
-	// Build IN clause for table names
-	// Note: Use double single quotes because this will be inside a snowflake_query string
-	std::ostringstream tables_in;
-	tables_in << "(";
-	for (size_t i = 0; i < monitor_tables.size(); i++) {
-		if (i > 0) {
-			tables_in << ", ";
+	for (const auto &monitor_table : monitor_tables) {
+		auto parsed = ParseMonitorTableName(monitor_table);
+
+		std::ostringstream sf_query;
+		sf_query << "SELECT CONCAT(table_catalog, ''.'', table_schema, ''.'', table_name) AS full_name, last_altered "
+		         << "FROM " << parsed.database_name << ".information_schema.tables "
+		         << "WHERE table_schema = ''" << EscapeSqlStringLiteral(parsed.schema_name) << "'' "
+		         << "AND table_name = ''" << EscapeSqlStringLiteral(parsed.table_name) << "''";
+
+		std::ostringstream query;
+		query << "SELECT * FROM snowflake_query('" << sf_query.str() << "', '" << EscapeSqlStringLiteral(secret_name)
+		      << "');";
+
+		auto result = conn.Query(query.str());
+		if (result->HasError()) {
+			throw IOException("Failed to query Snowflake metadata: " + result->GetError());
 		}
-		// Extract just the table name (last part after dots)
-		std::string table_name = monitor_tables[i];
-		size_t last_dot = table_name.rfind('.');
-		if (last_dot != std::string::npos) {
-			table_name = table_name.substr(last_dot + 1);
+		if (result->RowCount() == 0) {
+			throw IOException("No Snowflake metadata returned for source table '" + monitor_table + "'");
 		}
-		// Escape quotes for nested SQL string
-		tables_in << "''" << table_name << "''";
-	}
-	tables_in << ")";
 
-	// Query Snowflake information_schema via snowflake_query
-	// Signature: snowflake_query(query_string, secret_name)
-	// Extract database name from first monitor table (e.g., DUCKSYNC_TEST.TEST_DATA.CUSTOMERS -> DUCKSYNC_TEST)
-	std::string db_name;
-	if (!monitor_tables.empty()) {
-		std::string first_table = monitor_tables[0];
-		size_t first_dot = first_table.find('.');
-		if (first_dot != std::string::npos) {
-			db_name = first_table.substr(0, first_dot);
+		for (idx_t row = 0; row < result->RowCount(); row++) {
+			auto table_name = result->GetValue(0, row).ToString();
+			auto last_altered = result->GetValue(1, row).ToString();
+			metadata[table_name] = last_altered;
 		}
-	}
-
-	std::ostringstream sf_query;
-	sf_query << "SELECT CONCAT(table_catalog, ''.'', table_schema, ''.'', table_name) as full_name, "
-	         << "last_altered FROM " << db_name << ".information_schema.tables "
-	         << "WHERE table_name IN " << tables_in.str();
-
-	std::ostringstream query;
-	query << "SELECT * FROM snowflake_query('" << sf_query.str() << "', '" << secret_name << "');";
-
-	auto result = conn.Query(query.str());
-	if (result->HasError()) {
-		throw IOException("Failed to query Snowflake metadata: " + result->GetError());
-	}
-
-	// Build metadata map
-	for (idx_t row = 0; row < result->RowCount(); row++) {
-		auto table_name = result->GetValue(0, row).ToString();
-		auto last_altered = result->GetValue(1, row).ToString();
-		metadata[table_name] = last_altered;
 	}
 
 	return metadata;
+}
+
+std::unordered_map<std::string, RowsBytesSnapshot>
+RefreshOrchestrator::GetSourceTableRowsAndBytes(const std::string &metadata_secret_name,
+                                                const std::vector<std::string> &monitor_tables) {
+	std::unordered_map<std::string, RowsBytesSnapshot> snapshots;
+	auto conn = MakeConnection(context_);
+
+	for (const auto &monitor_table : monitor_tables) {
+		auto parsed = ParseMonitorTableName(monitor_table);
+
+		std::ostringstream show_tables_sql;
+		show_tables_sql << "SHOW TABLES LIKE ''" << EscapeSqlStringLiteral(parsed.table_name) << "'' IN SCHEMA "
+		                << parsed.database_name << "." << parsed.schema_name;
+
+		std::ostringstream query;
+		query << "SELECT * FROM snowflake_query('" << show_tables_sql.str() << "', '"
+		      << EscapeSqlStringLiteral(metadata_secret_name) << "');";
+
+		auto result = conn.Query(query.str());
+		if (result->HasError()) {
+			throw IOException("Failed to query Snowflake SHOW TABLES metadata: " + result->GetError());
+		}
+		if (result->RowCount() == 0) {
+			throw IOException("SHOW TABLES returned no metadata for source table '" + monitor_table + "'");
+		}
+
+		idx_t rows_col = DConstants::INVALID_INDEX;
+		idx_t bytes_col = DConstants::INVALID_INDEX;
+		for (idx_t col = 0; col < result->names.size(); col++) {
+			auto column_name = ToLower(result->names[col]);
+			if (column_name == "rows") {
+				rows_col = col;
+			} else if (column_name == "bytes") {
+				bytes_col = col;
+			}
+		}
+
+		if (rows_col == DConstants::INVALID_INDEX || bytes_col == DConstants::INVALID_INDEX) {
+			throw IOException("SHOW TABLES metadata for '" + monitor_table +
+			                  "' did not include required rows/bytes columns");
+		}
+
+		RowsBytesSnapshot snapshot;
+		snapshot.rows = result->GetValue(rows_col, 0).GetValue<int64_t>();
+		snapshot.bytes = result->GetValue(bytes_col, 0).GetValue<int64_t>();
+		snapshots[parsed.full_name] = snapshot;
+	}
+
+	return snapshots;
 }
 
 std::string RefreshOrchestrator::GenerateStateHash(const std::unordered_map<std::string, std::string> &metadata) {

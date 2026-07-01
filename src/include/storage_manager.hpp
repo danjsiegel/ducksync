@@ -32,6 +32,10 @@ public:
 		return ducklake_attached_;
 	}
 
+	bool IsPostgresBacked() const {
+		return !config_.pg_connection_string.empty();
+	}
+
 	// Table operations
 	bool TableExists(const std::string &cache_name, const std::string &source_name);
 	void CreateCacheTable(const std::string &cache_name, const std::string &source_name,

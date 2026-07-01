@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace duckdb {
@@ -21,6 +22,8 @@ struct CacheDefinition {
 	std::vector<std::string> monitor_tables;
 	int64_t ttl_seconds = 0;
 	bool has_ttl = false;
+	std::string invalidation_mode = "last_altered";
+	std::string metadata_secret_name;
 	std::string created_at;
 };
 
@@ -39,6 +42,11 @@ struct CacheState {
 	bool HasExpiresAt() const {
 		return !expires_at.empty();
 	}
+};
+
+struct TableSnapshot {
+	int64_t rows;
+	int64_t bytes;
 };
 
 // Manages DuckSync metadata stored in the DuckLake catalog (PostgreSQL)
@@ -72,6 +80,10 @@ public:
 	void InitializeState(const std::string &cache_name);
 	void UpdateState(const CacheState &state);
 	bool GetState(const std::string &cache_name, CacheState &out);
+	void SaveTableSnapshot(const std::string &cache_name, const std::string &source_table, int64_t source_rows,
+	                       int64_t source_bytes);
+	std::unordered_map<std::string, TableSnapshot> GetTableSnapshot(const std::string &cache_name);
+	void DeleteTableSnapshots(const std::string &cache_name);
 
 private:
 	ClientContext &context_;

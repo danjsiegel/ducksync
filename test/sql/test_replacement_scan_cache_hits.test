@@ -1,0 +1,86 @@
+# name: test/sql/test_replacement_scan_cache_hits.test
+# description: ReplacementScan routes cached source-table names to local DuckLake cache tables
+# group: [sql]
+
+require ducksync
+
+statement ok
+INSTALL ducklake;
+
+statement ok
+LOAD ducklake;
+
+statement ok
+INSTALL parquet;
+
+statement ok
+LOAD parquet;
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/ducksync_replacement_scan.ducklake' AS ducksync_route_lake
+    (DATA_PATH '{TEST_DIR}/ducksync_replacement_scan_data');
+
+statement ok
+SELECT * FROM ducksync_init('ducksync_route_lake');
+
+statement ok
+INSERT INTO ducksync_route_lake.ducksync.caches
+    (cache_name, source_name, source_query, monitor_tables, ttl_seconds, invalidation_mode, metadata_secret_name, created_at)
+VALUES
+    ('orders_cache', 'prod', 'SELECT * FROM ORDERS', ['DUCKSYNC_TEST.TEST_DATA.ORDERS'], NULL, 'last_altered', NULL, CURRENT_TIMESTAMP);
+
+statement ok
+INSERT INTO ducksync_route_lake.ducksync.state (cache_name, refresh_count)
+VALUES ('orders_cache', 0);
+
+statement error
+SELECT * FROM orders;
+----
+not yet cached
+
+statement ok
+CREATE SCHEMA IF NOT EXISTS ducksync_route_lake.prod;
+
+statement ok
+CREATE OR REPLACE TABLE ducksync_route_lake.prod.orders_cache AS
+SELECT 1 AS order_id, 'alice' AS customer
+UNION ALL
+SELECT 2 AS order_id, 'bob' AS customer;
+
+statement ok
+DELETE FROM ducksync_route_lake.ducksync.state WHERE cache_name = 'orders_cache';
+
+statement ok
+INSERT INTO ducksync_route_lake.ducksync.state
+    (cache_name, last_refresh, source_state_hash, expires_at, refresh_count)
+VALUES
+    ('orders_cache', CURRENT_TIMESTAMP, 'manual-test', NULL, 1);
+
+query T
+SELECT CAST(order_id AS VARCHAR) || ':' || customer FROM orders ORDER BY order_id;
+----
+1:alice
+2:bob
+
+query T
+SELECT CAST(order_id AS VARCHAR) || ':' || customer FROM main.orders ORDER BY order_id;
+----
+1:alice
+2:bob
+
+query T
+SELECT CAST(order_id AS VARCHAR) || ':' || customer FROM TEST_DATA.ORDERS ORDER BY order_id;
+----
+1:alice
+2:bob
+
+query T
+SELECT CAST(order_id AS VARCHAR) || ':' || customer FROM memory.main.orders ORDER BY order_id;
+----
+1:alice
+2:bob
+
+statement error
+SELECT * FROM unknown_table;
+----
+Table with name unknown_table does not exist

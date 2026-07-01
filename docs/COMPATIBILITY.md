@@ -71,14 +71,14 @@ DuckLake does not support `DEFAULT` expressions in `CREATE TABLE`. DuckSync pass
 
 ## DuckDB API Surface
 
-These are the DuckDB C++ API surfaces DuckSync uses. Check these when upgrading DuckDB (e.g., v1.4.4 → v1.5.0).
+These are the DuckDB C++ API surfaces DuckSync uses. Check these when upgrading DuckDB (e.g., v1.4.4 → v1.5.4).
 
 ### Extension loading
 
 | API | Location | Notes |
 |-----|----------|-------|
-| `ExtensionLoader::RegisterFunction(TableFunction)` | [`src/ducksync_extension.cpp:764`](../src/ducksync_extension.cpp) | Used to register all 6 table functions |
-| `ExtensionLoader::GetDatabaseInstance()` | [`src/ducksync_extension.cpp:800`](../src/ducksync_extension.cpp) | Used to register replacement scan hook |
+| `ExtensionLoader::RegisterFunction(TableFunction)` | [`src/ducksync_extension.cpp`](../src/ducksync_extension.cpp) | Used to register DuckSync table functions, including `ducksync_serve` and `ducksync_stop` |
+| `ExtensionLoader::GetDatabaseInstance()` | [`src/ducksync_extension.cpp`](../src/ducksync_extension.cpp) | Used to register the ReplacementScan hook |
 | `DucksyncExtension::Load(ExtensionLoader &)` | [`src/ducksync_extension.cpp:804`](../src/ducksync_extension.cpp) | Extension entry point |
 
 ### Connection and query execution
@@ -105,20 +105,40 @@ These are the DuckDB C++ API surfaces DuckSync uses. Check these when upgrading 
 
 | API | Location | Notes |
 |-----|----------|-------|
-| `ClientContextState` (base class) | [`src/include/query_router.hpp:11`](../src/include/query_router.hpp) | `DuckSyncState` inherits from this |
-| `context.registered_state->GetOrCreate<T>(key)` | [`src/query_router.cpp:8`](../src/query_router.cpp) | Per-connection state management |
+| `ClientContextState` (base class) | [`src/include/query_router.hpp`](../src/include/query_router.hpp) | `DuckSyncState` inherits from this |
+| `context.registered_state->GetOrCreate<T>(key)` | [`src/query_router.cpp`](../src/query_router.cpp) | Per-connection state management |
 
 ### Table function registration
 
 | API | Location | Notes |
 |-----|----------|-------|
-| `TableFunction(name, arg_types, func, bind)` | [`src/ducksync_extension.cpp:766`](../src/ducksync_extension.cpp) | 6 functions registered (2 overloads each for init/setup_storage) |
-| `TableFunction::named_parameters` | [`src/ducksync_extension.cpp:778`](../src/ducksync_extension.cpp) | Used for `passthrough_enabled` and `force` named params |
-| `TableFunctionInitGlobal` | [`src/ducksync_extension.cpp:795`](../src/ducksync_extension.cpp) | Used for `ducksync_query` global state |
+| `TableFunction(name, arg_types, func, bind)` | [`src/ducksync_extension.cpp`](../src/ducksync_extension.cpp) | Used to register the DuckSync table-function surface, including init/setup overloads |
+| `TableFunction::named_parameters` | [`src/ducksync_extension.cpp`](../src/ducksync_extension.cpp) | Used for `passthrough_enabled`, `force`, `metadata_secret`, and `ducksync_serve` options |
+| `TableFunctionInitGlobal` | [`src/ducksync_extension.cpp`](../src/ducksync_extension.cpp) | Used for `ducksync_query` and `ducksync_serve` global state |
+
+### ReplacementScan
+
+| API | Location | Notes |
+|-----|----------|-------|
+| `DBConfig::GetConfig(db).replacement_scans.emplace_back(...)` | [`src/query_router.cpp`](../src/query_router.cpp) | Registers DuckSync's cached-table routing hook |
+| `ReplacementScanInput` | [`src/query_router.cpp`](../src/query_router.cpp) | Preserves naked, two-part, and three-part table-name forms |
+| `BaseTableRef` | [`src/query_router.cpp`](../src/query_router.cpp) | Rewrites cache hits to `{ducklake_catalog}.{source_name}.{cache_name}` |
 
 ---
 
-## Upgrading to DuckDB v1.5
+## Upgrading to DuckDB v1.5.4
+
+DuckSync's v1.5.4 upgrade adds support for the Quack remote-protocol API surface without changing DuckSync's own extension API:
+
+- `quack_serve`, `quack_stop`, and `quack_query` are now available through DuckDB's Quack extension
+- DuckSync exposes these via `ducksync_serve(...)` and `ducksync_stop(...)`
+- Transparent cached-table routing now relies on DuckDB `ReplacementScan`
+- There are no breaking changes to existing DuckSync SQL entry points
+
+### Arrow scanner constraint for `SHOW TABLES`
+
+`SHOW TABLES` results from Snowflake must still be consumed with `SELECT *` through `snowflake_query(...)`.
+Projecting individual columns from that Arrow result shape can crash the scanner. DuckSync's two-stage invalidation path is written to avoid this by selecting the full result set first and only then reading the returned columns in DuckDB.
 
 ### Before the release (proactive)
 
@@ -129,7 +149,7 @@ These are the DuckDB C++ API surfaces DuckSync uses. Check these when upgrading 
 ### On release day
 
 ```bash
-make update-version VERSION=v1.5.0
+make update-version VERSION=v1.5.4
 make clean-all && make release
 make test
 bash docs/manual_test.sh
@@ -177,6 +197,11 @@ SELECT * FROM ducksync_setup_storage('host=...', 's3://...', 'my_ducksync_schema
 
 The metadata schema parameter only affects where DuckSync stores its own `sources`, `caches`, and `state` tables. It does **not** affect where cached data tables are stored (those always live in `catalog.source_name.cache_name`).
 
-### Future: Replacement scan
+### Transparent cached-table routing
 
-A true "drop-in" experience where `SELECT * FROM snowflake_table` is intercepted without `ducksync_query()` would require implementing [`QueryRouter::Register`](../src/query_router.cpp) (currently a no-op). This is tracked as future work.
+DuckSync now uses [`QueryRouter::Register`](../src/query_router.cpp) to install a `ReplacementScan` hook for cached source tables. The current contract is intentionally narrow:
+
+- cache hits route reads like `orders`, `main.orders`, and fully qualified monitored names to the local DuckLake cache table
+- misses still surface the normal DuckDB catalog error
+- monitored-but-unrefreshed tables raise a DuckSync-specific error that instructs the user to run `ducksync_refresh(...)` or use `ducksync_query(...)`
+- the callback must remain planner-only: no live network I/O, refresh work, or background activity

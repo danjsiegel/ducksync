@@ -17,11 +17,13 @@ SELECT 1;
 # ducksync_create_cache: 1
 # ducksync_refresh: 1
 # ducksync_query: 1
-# Total: 8
+# ducksync_serve: 1
+# ducksync_stop: 1
+# Total: 10
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
 ----
-8
+10
 
 # ducksync_init has 2 overloads: (catalog_name) and (catalog_name, schema_name)
 query I
@@ -52,6 +54,16 @@ SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_refresh'
 
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_query';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_serve';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'ducksync_stop';
 ----
 1
 
@@ -116,6 +128,28 @@ SELECT * FROM ducksync_create_cache('one', 'two');
 No function matches
 
 statement error
+SELECT * FROM ducksync_create_cache(
+    'cache1',
+    'src1',
+    'SELECT 1',
+    ['DB.SCHEMA.TABLE'],
+    invalidation_mode := 'invalid_mode'
+);
+----
+invalidation_mode must be one of: last_altered, two_stage, ttl_only, manual
+
+statement error
+SELECT * FROM ducksync_create_cache(
+    'cache1',
+    'src1',
+    'SELECT 1',
+    ['DB.SCHEMA.TABLE'],
+    invalidation_mode := 'two_stage'
+);
+----
+ducksync_create_cache with invalidation_mode='two_stage' requires metadata_secret
+
+statement error
 SELECT * FROM ducksync_refresh();
 ----
 No function matches
@@ -130,9 +164,31 @@ SELECT * FROM ducksync_query('only_one');
 ----
 No function matches
 
+statement error
+SELECT * FROM ducksync_serve();
+----
+No function matches
+
+statement error
+SELECT * FROM ducksync_stop();
+----
+No function matches
+
 # Test functions require initialization
 statement error
 SELECT * FROM ducksync_query('SELECT * FROM test', 'my_source');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_create_cache(
+    'orders_cache',
+    'prod',
+    'SELECT * FROM ORDERS',
+    ['DUCKSYNC_TEST.TEST_DATA.ORDERS'],
+    invalidation_mode := 'two_stage',
+    metadata_secret := 'sf_meta'
+);
 ----
 DuckSync not initialized
 
@@ -143,5 +199,15 @@ DuckSync not initialized
 
 statement error
 SELECT * FROM ducksync_refresh('my_cache');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_serve('quack:localhost');
+----
+DuckSync not initialized
+
+statement error
+SELECT * FROM ducksync_stop('quack:localhost');
 ----
 DuckSync not initialized

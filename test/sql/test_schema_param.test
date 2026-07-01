@@ -88,8 +88,8 @@ Catalog 'nonexistent_catalog' not found
 # Verify no extra overloads were accidentally registered
 # ============================================================================
 
-# Total ducksync function count should be exactly 8
+# Total ducksync function count should be exactly 10
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name LIKE 'ducksync%';
 ----
-8
+10

@@ -29,6 +29,11 @@ struct RefreshStatus {
 	}
 };
 
+struct RowsBytesSnapshot {
+	int64_t rows;
+	int64_t bytes;
+};
+
 // Orchestrates smart refresh logic for DuckSync
 class RefreshOrchestrator {
 public:
@@ -50,6 +55,9 @@ private:
 	// Query Snowflake for table metadata
 	std::unordered_map<std::string, std::string> GetSourceTableMetadata(const std::string &secret_name,
 	                                                                    const std::vector<std::string> &monitor_tables);
+
+	std::unordered_map<std::string, RowsBytesSnapshot>
+	GetSourceTableRowsAndBytes(const std::string &metadata_secret_name, const std::vector<std::string> &monitor_tables);
 
 	// Generate hash from table metadata
 	std::string GenerateStateHash(const std::unordered_map<std::string, std::string> &metadata);
